@@ -1,0 +1,81 @@
+[build-system]
+requires = ["hatchling >= 1.26"]
+build-backend = "hatchling.build"
+
+[project]
+name = "myli"
+dynamic = ["version"]
+description = "A provider-neutral harness for structured visual-design agents"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = ["jsonschema>=4.18.0"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+]
+keywords = ["agents", "asset-search", "design", "vision"]
+
+[project.optional-dependencies]
+litellm = ["litellm>=1.40.0"]
+pydantic = ["pydantic>=2.0"]
+
+[dependency-groups]
+dev = ["ruff>=0.12.0"]
+
+[tool.hatch.version]
+path = "src/myli/__init__.py"
+
+[tool.ruff]
+target-version = "py310"
+line-length = 119
+
+[tool.ruff.lint]
+select = [
+    "E",  # pycodestyle errors
+    "F",  # Pyflakes
+    "I",  # isort
+    "W",  # pycodestyle warnings
+    "UP",  # pyupgrade
+    "FURB",  # refurb
+    "SIM",  # flake8-simplify
+    "S110",  # bandit's try-except-pass rule
+    "C4",  # flake8-comprehensions
+    "C901",  # McCabe complexity
+    "RUF013",  # implicit Optional annotations
+    "PERF102",  # discarded dict.items() keys or values
+    "PLC1802",  # len calls used as boolean tests
+    "PLC0208",  # iteration over sets of literals
+    "PIE794",  # duplicate class fields
+]
+ignore = [
+    "E501",  # line length is handled by the formatter
+    "E741",  # ambiguous variable names
+    "SIM1",  # all SIM1XX rules
+    "SIM905",  # static str.split calls
+    "UP015",  # redundant open modes
+    "UP031",  # printf-style string formatting
+]
+extend-safe-fixes = ["UP006"]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["E402", "F401", "F403", "F811"]
+
+[tool.ruff.lint.isort]
+lines-after-imports = 2
+known-first-party = ["myli"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 75
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"

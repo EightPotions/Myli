@@ -1,0 +1,6 @@
+# Top-level documentation dependencies. Keep these versions explicit so that
+# Read the Docs and local builds use the same documentation toolchain.
+Sphinx==8.2.3
+furo==2025.12.19
+myst-parser==5.1.0
+sphinx-copybutton==0.5.2

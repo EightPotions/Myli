@@ -5,6 +5,9 @@ the public contracts evolve.
 
 ## Unreleased
 
+## 0.1.1
+
+- custom tools honor per-run `tool_failure_modes` overrides consistently;
 - candidate round-trip failures identify the first differing RFC 6901 JSON
   Pointer, including escaped object keys;
 - ToolContext exposes model-step and tool-batch identity, position, and size for

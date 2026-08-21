@@ -1030,7 +1030,13 @@ class Myli(Generic[TDesign]):
             return await self._search_assets(call, provider, state, failure_mode)
         config = self._tools.get(call.name)
         if config is not None:
-            return await self._execute_custom_tool(call, config, state, context)
+            return await self._execute_custom_tool(
+                call,
+                config,
+                state,
+                context,
+                failure_mode,
+            )
         return _CallExecution(
             outcome=self._outcome(
                 state,
@@ -1047,6 +1053,7 @@ class Myli(Generic[TDesign]):
         config: _ToolConfig,
         state: _RunState[TDesign],
         context: ToolContext,
+        failure_mode: FailureMode,
     ) -> _CallExecution:
         missing = config.required_capabilities.difference(state.capabilities)
         if missing:
@@ -1057,7 +1064,7 @@ class Myli(Generic[TDesign]):
                     status="rejected",
                     message=("Required capabilities are unavailable: " + ", ".join(sorted(missing))),
                 ),
-                failure_mode=config.failure_mode,
+                failure_mode=failure_mode,
             )
         arguments = copy.deepcopy(dict(call.arguments))
         try:
@@ -1070,7 +1077,7 @@ class Myli(Generic[TDesign]):
                     status="rejected",
                     message=f"Tool arguments do not match the schema: {exc.message}",
                 ),
-                failure_mode=config.failure_mode,
+                failure_mode=failure_mode,
             )
         calls = state.custom_calls.get(call.name, 0)
         if calls >= config.max_calls_per_run:
@@ -1081,7 +1088,7 @@ class Myli(Generic[TDesign]):
                     status="rejected",
                     message="The per-run tool call budget is exhausted.",
                 ),
-                failure_mode=config.failure_mode,
+                failure_mode=failure_mode,
             )
         state.custom_calls[call.name] = calls + 1
         try:
@@ -1097,7 +1104,7 @@ class Myli(Generic[TDesign]):
                     status="timed_out",
                     message=f"Tool timed out after {config.timeout_seconds:g} seconds.",
                 ),
-                failure_mode=config.failure_mode,
+                failure_mode=failure_mode,
                 cause=exc,
             )
         except asyncio.CancelledError:
@@ -1110,7 +1117,7 @@ class Myli(Generic[TDesign]):
                     status="failed",
                     message=f"Tool {call.name} failed.",
                 ),
-                failure_mode=config.failure_mode,
+                failure_mode=failure_mode,
                 cause=exc,
             )
         try:
@@ -1123,7 +1130,7 @@ class Myli(Generic[TDesign]):
                     status="failed",
                     message=f"Tool result is not strict JSON: {exc}",
                 ),
-                failure_mode=config.failure_mode,
+                failure_mode=failure_mode,
                 cause=exc,
             )
         if size > config.max_result_bytes:
@@ -1134,7 +1141,7 @@ class Myli(Generic[TDesign]):
                     status="failed",
                     message=(f"Tool result exceeds the {config.max_result_bytes}-byte limit."),
                 ),
-                failure_mode=config.failure_mode,
+                failure_mode=failure_mode,
             )
         return _CallExecution(
             outcome=self._outcome(
@@ -1144,7 +1151,7 @@ class Myli(Generic[TDesign]):
                 result=serialized,
                 result_size_bytes=size,
             ),
-            failure_mode=config.failure_mode,
+            failure_mode=failure_mode,
         )
 
     async def _render_design(

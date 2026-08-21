@@ -10,6 +10,8 @@ import unittest
 from myli import (
     DesignSpec,
     FunctionRenderer,
+    LiteLLMMainModel,
+    LiteLLMVisionModel,
     Message,
     ModelProtocolError,
     ModelRequest,
@@ -22,7 +24,6 @@ from myli import (
     ToolCall,
     ToolDefinition,
 )
-from myli._models import _MainModelClient, _VisionModelClient
 
 
 def model_request() -> ModelRequest:
@@ -94,7 +95,7 @@ def test_main_client_maps_messages_tools_schema_and_tool_response() -> None:
             ],
         }
 
-    client = _MainModelClient(
+    client = LiteLLMMainModel(
         model="anthropic/claude-test",
         base_url="https://models.example.test/v1",
         api_key="main-secret",
@@ -145,12 +146,12 @@ def test_main_client_supports_json_and_text_modes() -> None:
             ]
         }
 
-    json_client = _MainModelClient(
+    json_client = LiteLLMMainModel(
         model="openai/test",
         output_mode="json",
         completion=completion,
     )
-    text_client = _MainModelClient(
+    text_client = LiteLLMMainModel(
         model="ollama/test",
         output_mode="text",
         completion=completion,
@@ -185,7 +186,7 @@ def test_main_client_rejects_invalid_tool_argument_json() -> None:
             ]
         }
 
-    client = _MainModelClient(model="openai/test", completion=completion)
+    client = LiteLLMMainModel(model="openai/test", completion=completion)
 
     with unittest.TestCase().assertRaisesRegex(ModelProtocolError, "invalid JSON arguments"):
         asyncio.run(client.complete(model_request()))
@@ -203,7 +204,7 @@ def test_main_client_normalizes_unexpected_response_parsing_failures() -> None:
         del kwargs
         return BrokenResponse()
 
-    client = _MainModelClient(model="provider/test", completion=completion)
+    client = LiteLLMMainModel(model="provider/test", completion=completion)
 
     with unittest.TestCase().assertRaisesRegex(ModelProtocolError, "could not be normalized") as raised:
         asyncio.run(client.complete(model_request()))
@@ -228,7 +229,7 @@ def test_model_client_translates_provider_failures_to_stable_errors() -> None:
             del kwargs
             raise _error
 
-        client = _MainModelClient(model="provider/test", completion=completion)
+        client = LiteLLMMainModel(model="provider/test", completion=completion)
         with test_case.subTest(expected_type=expected_type.__name__):
             with test_case.assertRaises(expected_type) as raised:
                 asyncio.run(client.complete(model_request()))
@@ -242,7 +243,7 @@ def test_model_client_does_not_rewrap_stable_myli_errors() -> None:
         del kwargs
         raise source_error
 
-    client = _MainModelClient(model="provider/test", completion=completion)
+    client = LiteLLMMainModel(model="provider/test", completion=completion)
 
     with unittest.TestCase().assertRaises(ProviderRateLimitError) as raised:
         asyncio.run(client.complete(model_request()))
@@ -267,7 +268,7 @@ def test_vision_client_sends_an_in_memory_data_url() -> None:
             ]
         }
 
-    vision = _VisionModelClient(
+    vision = LiteLLMVisionModel(
         model="openai/vision-test",
         base_url="https://vision.example.test/v1",
         api_key="vision-secret",
@@ -318,18 +319,18 @@ def test_myli_constructor_builds_model_clients_from_generic_settings() -> None:
         renderer=FunctionRenderer(render),
     )
 
-    assert isinstance(harness._main_client, _MainModelClient)
-    assert isinstance(harness._vision_client, _VisionModelClient)
+    assert isinstance(harness.main_model, LiteLLMMainModel)
+    assert isinstance(harness.vision_model, LiteLLMVisionModel)
     assert not hasattr(harness, "main_agent")
     assert not hasattr(harness, "vision_agent")
-    assert harness._main_client.model == "openai/main-test"
-    assert harness._main_client.base_url == "https://main.example.test/v1"
-    assert harness._main_client.options == {"temperature": 0.1}
-    assert harness._vision_client.model == "openai/vision-test"
-    assert harness._vision_client.base_url == "https://vision.example.test/v1"
-    assert harness._vision_client.options == {"max_tokens": 300}
+    assert harness.main_model.model == "openai/main-test"
+    assert harness.main_model.base_url == "https://main.example.test/v1"
+    assert harness.main_model.options == {"temperature": 0.1}
+    assert harness.vision_model.model == "openai/vision-test"
+    assert harness.vision_model.base_url == "https://vision.example.test/v1"
+    assert harness.vision_model.options == {"max_tokens": 300}
     assert harness.main_prompt == "Custom main prompt."
-    assert harness._vision_client.system_prompt == "Custom vision prompt."
+    assert harness.vision_model.system_prompt == "Custom vision prompt."
 
 
 def test_myli_reuses_main_model_endpoint_for_vision_by_default() -> None:
@@ -350,8 +351,9 @@ def test_myli_reuses_main_model_endpoint_for_vision_by_default() -> None:
         renderer=FunctionRenderer(render),
     )
 
-    assert harness._vision_client.model == "ollama/llava"
-    assert harness._vision_client.base_url == "http://localhost:11434"
+    assert isinstance(harness.vision_model, LiteLLMVisionModel)
+    assert harness.vision_model.model == "ollama/llava"
+    assert harness.vision_model.base_url == "http://localhost:11434"
 
 
 def load_tests(loader, standard_tests, pattern):

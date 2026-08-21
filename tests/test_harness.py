@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import unittest
+from collections.abc import Callable
 from dataclasses import replace
 from typing import Any
 
@@ -13,6 +14,7 @@ from myli import (
     CandidateContext,
     ConfigurationError,
     DesignSpec,
+    FailureMode,
     HarnessLimits,
     Message,
     ModelProtocolError,
@@ -21,6 +23,7 @@ from myli import (
     Myli,
     RenderedArtifact,
     ToolCall,
+    ToolContext,
     ToolExecutionError,
     apply_json_patch,
 )
@@ -55,8 +58,11 @@ DESIGN_SPEC = DesignSpec[dict[str, Any]](
 )
 
 
+ResponseFactory = Callable[[ModelRequest], ModelResponse]
+
+
 class FakeMainAgent:
-    def __init__(self, responses: list[ModelResponse | Exception]) -> None:
+    def __init__(self, responses: list[ModelResponse | Exception | ResponseFactory]) -> None:
         self._responses = iter(responses)
         self.requests: list[ModelRequest] = []
 
@@ -65,6 +71,8 @@ class FakeMainAgent:
         response = next(self._responses)
         if isinstance(response, Exception):
             raise response
+        if callable(response):
+            response = response(request)
         return response
 
 
@@ -126,7 +134,8 @@ class FakeAgentTool:
         self.delay = delay
         self.calls: list[dict[str, Any]] = []
 
-    async def execute(self, arguments: dict[str, Any]) -> Any:
+    async def execute(self, arguments: dict[str, Any], context: ToolContext) -> Any:
+        del context
         self.calls.append(dict(arguments))
         if self.delay:
             await asyncio.sleep(self.delay)
@@ -139,6 +148,19 @@ CURRENT_DESIGN = {"background": "#ffffff", "elements": []}
 def normalize_background_in_place(value: dict[str, Any]) -> dict[str, Any]:
     value["background"] = value["background"].strip()
     return value
+
+
+def searched_asset_ref(request: ModelRequest, *, source: str, asset_id: str) -> str:
+    for message in reversed(request.messages):
+        if message.role != "tool" or message.content is None:
+            continue
+        payload = json.loads(message.content)
+        if payload.get("source") != source:
+            continue
+        for asset in payload["assets"]:
+            if asset["id"] == asset_id:
+                return asset["asset_ref"]
+    raise AssertionError(f"No asset {source}:{asset_id} was present in the model request.")
 
 
 def test_agent_can_return_advice_without_editing() -> None:
@@ -286,6 +308,7 @@ def test_agent_can_render_review_and_return_a_validated_edit() -> None:
     assert "Make the background warmer" in vision.reviews[0][1]
     assert json.loads(model.requests[1].messages[-1].content)["visual_review"]
     assert [event.kind for event in events] == [
+        "run.started",
         "model.started",
         "model.completed",
         "tool.started",
@@ -294,10 +317,12 @@ def test_agent_can_render_review_and_return_a_validated_edit() -> None:
         "model.completed",
         "validation.started",
         "validation.completed",
+        "run.completed",
     ]
-    assert all(event.run_id == result.traces[0].run_id for event in events)
-    assert all(event.step_id == result.traces[0].step_id for event in events[:4])
-    assert all(event.step_id == result.traces[1].step_id for event in events[4:])
+    assert all(event.run_id == result.run_id for event in events)
+    assert events[0].step_id == events[-1].step_id == ""
+    assert all(event.step_id == result.traces[0].step_id for event in events[1:5])
+    assert all(event.step_id == result.traces[1].step_id for event in events[5:-1])
     assert all(event.safe_message == event.message for event in events)
     assert all(event.elapsed_seconds >= 0 for event in events)
 
@@ -362,9 +387,9 @@ def test_custom_agent_tool_enforces_capabilities_and_per_run_limit() -> None:
 
     assert [definition.name for definition in model.requests[0].tools][-1] == ("lookup_brand")
     assert tool.calls == [{"key": "primary"}]
-    assert json.loads(result.traces[0].tool_results[0].content) == {"value": "navy"}
-    assert result.traces[0].tool_results[1].is_error is True
-    assert "call limit" in result.traces[0].tool_results[1].content
+    assert result.traces[0].tool_outcomes[0].result == {"value": "navy"}
+    assert result.traces[0].tool_outcomes[1].status == "rejected"
+    assert "call budget" in (result.traces[0].tool_outcomes[1].message or "")
     assert result.traces[0].provider_response_id == "response-1"
     assert result.traces[0].model_name == "provider/model"
     assert result.traces[0].finish_reason == "tool_calls"
@@ -375,7 +400,7 @@ def test_custom_agent_tool_enforces_capabilities_and_per_run_limit() -> None:
     assert result.traces[0].reasoning_content == "[redacted]"
     assert result.traces[0].model_latency_seconds is not None
     assert result.traces[0].tool_latency_seconds is not None
-    assert all(item.latency_seconds is not None for item in result.traces[0].tool_results)
+    assert all(item.latency_seconds is not None for item in result.traces[0].tool_outcomes)
     assert steps == list(result.traces)
 
 
@@ -407,8 +432,8 @@ def test_custom_agent_tool_denies_missing_capabilities() -> None:
 
     assert tool.calls == []
     assert "lookup_brand" not in {definition.name for definition in model.requests[0].tools}
-    assert result.traces[0].tool_results[0].is_error is True
-    assert "brand.read" in result.traces[0].tool_results[0].content
+    assert result.traces[0].tool_outcomes[0].status == "rejected"
+    assert "brand.read" in (result.traces[0].tool_outcomes[0].message or "")
 
 
 def test_custom_agent_tool_enforces_timeout_and_result_size() -> None:
@@ -445,16 +470,17 @@ def test_custom_agent_tool_enforces_timeout_and_result_size() -> None:
 
     result = asyncio.run(harness.run(request="Look it up.", design=CURRENT_DESIGN))
 
-    assert all(item.is_error for item in result.traces[0].tool_results)
-    assert "timed out" in result.traces[0].tool_results[0].content
-    assert "byte limit" in result.traces[0].tool_results[1].content
+    assert [item.status for item in result.traces[0].tool_outcomes] == ["timed_out", "failed"]
+    assert "timed out" in (result.traces[0].tool_outcomes[0].message or "")
+    assert "byte limit" in (result.traces[0].tool_outcomes[1].message or "")
 
 
 def test_custom_agent_tool_failure_raises_stable_execution_error() -> None:
     source_error = LookupError("brand service unavailable")
 
     class FailingAgentTool(FakeAgentTool):
-        async def execute(self, arguments: dict[str, Any]) -> Any:
+        async def execute(self, arguments: dict[str, Any], context: ToolContext) -> Any:
+            del context
             self.calls.append(dict(arguments))
             raise source_error
 
@@ -478,9 +504,10 @@ def test_custom_agent_tool_failure_raises_stable_execution_error() -> None:
         design_spec=DESIGN_SPEC,
         renderer=FakeRenderer(),
         tools=[tool],
+        tool_failure_modes={"lookup_brand": FailureMode.RAISE},
     )
 
-    with unittest.TestCase().assertRaisesRegex(ToolExecutionError, "lookup_brand execution failed") as raised:
+    with unittest.TestCase().assertRaisesRegex(ToolExecutionError, "Tool lookup_brand failed") as raised:
         asyncio.run(harness.run(request="Look it up.", design=CURRENT_DESIGN))
 
     assert raised.exception.__cause__ is source_error
@@ -524,6 +551,24 @@ def test_multiple_asset_search_tools_and_preview_inspection_share_approved_asset
         "background": "#ffffff",
         "elements": [{"type": "image", "uri": photo.uri}],
     }
+
+    def inspect_photo(request: ModelRequest) -> ModelResponse:
+        return ModelResponse(
+            tool_calls=(
+                ToolCall(
+                    id="inspect-1",
+                    name="inspect_asset",
+                    arguments={
+                        "asset_ref": searched_asset_ref(
+                            request,
+                            source="stock",
+                            asset_id="photo-1",
+                        )
+                    },
+                ),
+            )
+        )
+
     model = FakeMainAgent(
         [
             ModelResponse(
@@ -540,15 +585,7 @@ def test_multiple_asset_search_tools_and_preview_inspection_share_approved_asset
                     ),
                 )
             ),
-            ModelResponse(
-                tool_calls=(
-                    ToolCall(
-                        id="inspect-1",
-                        name="inspect_asset",
-                        arguments={"asset_ref": "stock:photo-1"},
-                    ),
-                )
-            ),
+            inspect_photo,
             ModelResponse(
                 content=json.dumps(
                     {
@@ -625,6 +662,24 @@ def test_asset_search_supports_non_image_assets_and_visual_previews() -> None:
         description="Warm earth tones",
     )
     library = FakeSearch("library", [font, palette])
+
+    def inspect_font(request: ModelRequest) -> ModelResponse:
+        return ModelResponse(
+            tool_calls=(
+                ToolCall(
+                    id="inspect-font",
+                    name="inspect_asset",
+                    arguments={
+                        "asset_ref": searched_asset_ref(
+                            request,
+                            source="library",
+                            asset_id="font-1",
+                        )
+                    },
+                ),
+            )
+        )
+
     model = FakeMainAgent(
         [
             ModelResponse(
@@ -636,15 +691,7 @@ def test_asset_search_supports_non_image_assets_and_visual_previews() -> None:
                     ),
                 )
             ),
-            ModelResponse(
-                tool_calls=(
-                    ToolCall(
-                        id="inspect-font",
-                        name="inspect_asset",
-                        arguments={"asset_ref": "library:font-1"},
-                    ),
-                )
-            ),
+            inspect_font,
             ModelResponse(content=json.dumps({"message": "The font and palette fit.", "patch": None})),
         ]
     )
@@ -664,12 +711,16 @@ def test_asset_search_supports_non_image_assets_and_visual_previews() -> None:
         "search_assets_library",
         "inspect_asset",
     ]
-    search_result = json.loads(result.traces[0].tool_results[0].content)
+    search_result = result.traces[0].tool_outcomes[0].result
     assert [item["kind"] for item in search_result["assets"]] == ["font", "palette"]
     assert search_result["assets"][0]["preview_available"] is True
     assert search_result["assets"][1]["preview_available"] is False
-    assert result.approved_assets == (font, palette)
-    assert "searched font asset" in vision.reviews[0][1]
+    assert [(asset.id, asset.uri) for asset in result.approved_assets] == [
+        (font.id, font.uri),
+        (palette.id, palette.uri),
+    ]
+    assert all(asset.run_id == result.run_id for asset in result.approved_assets)
+    assert "discovered font preview" in vision.reviews[0][1]
 
 
 def test_editing_disabled_retries_a_model_that_returns_a_patch() -> None:
@@ -709,7 +760,7 @@ def test_editing_disabled_retries_a_model_that_returns_a_patch() -> None:
 
     assert result.design is None
     assert len(model.requests) == 2
-    assert result.traces[0].validation_error == ("Editing is disabled; patch must be null.")
+    assert result.traces[0].validation_failures == ("Editing is disabled; patch must be null.",)
     assert "previous final response was invalid" in (model.requests[1].messages[-1].content or "")
 
 
@@ -761,8 +812,8 @@ def test_editing_disabled_allows_only_unchanged_diagnostic_renders() -> None:
 
     assert result.changed is False
     assert renderer.designs == []
-    assert result.traces[0].tool_results[0].is_error is True
-    assert "only the unchanged design" in result.traces[0].tool_results[0].content
+    assert result.traces[0].tool_outcomes[0].status == "rejected"
+    assert "changed candidate cannot be rendered" in (result.traces[0].tool_outcomes[0].message or "")
 
 
 def test_candidate_policy_can_reject_an_unsearched_asset() -> None:
@@ -817,7 +868,8 @@ def test_candidate_policy_can_reject_an_unsearched_asset() -> None:
             )
         )
 
-    assert "valid final response" in str(error.exception)
+    assert "validation retry budget" in str(error.exception)
+    assert "unapproved image asset" in str(error.exception.__cause__)
 
 
 def test_patch_schemas_do_not_embed_the_complete_design_schema() -> None:
@@ -893,7 +945,7 @@ def test_invalid_patch_is_retried_without_mutating_the_current_design() -> None:
 
     assert current == CURRENT_DESIGN
     assert result.design == {"background": "#f5efe6", "elements": []}
-    assert "path member 'missing' does not exist" in (result.traces[0].validation_error or "")
+    assert "path member 'missing' does not exist" in result.traces[0].validation_failures[0]
 
 
 def test_normalized_final_patch_is_retried_to_preserve_patch_consistency() -> None:
@@ -951,7 +1003,7 @@ def test_normalized_final_patch_is_retried_to_preserve_patch_consistency() -> No
     assert result.design == {"background": "#f5efe6", "elements": []}
     assert result.patch == ({"op": "replace", "path": "/background", "value": "#f5efe6"},)
     assert apply_json_patch(CURRENT_DESIGN, list(result.patch)) == result.design
-    assert "normalized the patched document" in (result.traces[0].validation_error or "")
+    assert "round-trip without normalization" in result.traces[0].validation_failures[0]
 
 
 def test_normalized_render_patch_is_rejected_before_rendering() -> None:
@@ -981,8 +1033,8 @@ def test_normalized_render_patch_is_rejected_before_rendering() -> None:
     result = asyncio.run(harness.run(request="Preview a warmer background.", design=CURRENT_DESIGN))
 
     assert renderer.designs == []
-    assert result.traces[0].tool_results[0].is_error is True
-    assert "normalized the patched document" in result.traces[0].tool_results[0].content
+    assert result.traces[0].tool_outcomes[0].status == "rejected"
+    assert "round-trip without normalization" in (result.traces[0].tool_outcomes[0].message or "")
 
 
 def test_history_accepts_only_plain_user_and_assistant_messages() -> None:

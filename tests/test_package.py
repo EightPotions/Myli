@@ -16,7 +16,7 @@ def test_core_harness_is_exposed() -> None:
     assert myli.Myli.__name__ == "Myli"
     assert myli.FunctionRenderer.__name__ == "FunctionRenderer"
     assert myli.FunctionAssetSearch.__name__ == "FunctionAssetSearch"
-    assert myli.AssetSearchTool.__name__ == "AssetSearchTool"
+    assert myli.AssetSearchProvider.__name__ == "AssetSearchProvider"
     assert myli.AgentTool.__name__ == "AgentTool"
     assert not hasattr(myli, "ImageAsset")
     assert not hasattr(myli, "ImageSearchTool")

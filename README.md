@@ -7,6 +7,9 @@ or applies the returned candidate to application state.
 The core is independent of Pydantic, canvas formats, rendering stacks, model
 providers, ORMs, progress transports, and persistence systems.
 
+Read the [Myli documentation](https://myli.readthedocs.io/en/latest/) for the
+complete guide and API reference.
+
 ## Run contract
 
 ~~~python

@@ -25,7 +25,7 @@ autodoc_typehints = "description"
 myst_heading_anchors = 3
 
 html_theme = "furo"
-html_title = f"Myli {release}"
+html_title = "Myli Docs"
 html_theme_options = {
     "source_repository": "https://github.com/EightPotions/Myli/",
     "source_branch": "main",

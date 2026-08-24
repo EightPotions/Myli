@@ -1,8 +1,8 @@
 # Getting started
 
-Myli does not prescribe a design-document format or model transport. Inject
-public MainModel and VisionModel implementations, or opt into the LiteLLM
-implementations by supplying model names and connection settings.
+Myli does not prescribe a design-document format or model transport. LiteLLM is
+the default provider: supply model names and connection settings, or inject
+custom MainModel and VisionModel implementations.
 
 ## Installation
 
@@ -10,7 +10,7 @@ Myli requires Python 3.10 or newer. Once a release is available on PyPI, install
 it with:
 
 ```console
-$ python -m pip install "myli[litellm]"
+$ python -m pip install myli
 ```
 
 For development from a checkout, install the repository itself:

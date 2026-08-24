@@ -1,12 +1,13 @@
 # Integrating Myli
 
-MainModel and VisionModel are public injectable protocols. Applications can use
-custom transports and fakes, or the optional LiteLLM implementations.
+MainModel and VisionModel are public injectable protocols. LiteLLM is the
+default provider, while applications can still inject custom transports and
+fakes.
 
 ## Models
 
 ```console
-$ python -m pip install "myli[litellm]"
+$ python -m pip install myli
 ```
 
 ```python

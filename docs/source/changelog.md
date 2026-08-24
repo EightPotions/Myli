@@ -5,6 +5,10 @@ the public contracts evolve.
 
 ## Unreleased
 
+- LiteLLM is now the default model provider and is installed with Myli; custom
+  MainModel and VisionModel implementations remain injectable. The previous
+  `litellm` extra remains available as a compatibility alias.
+
 ## 0.1.1
 
 - custom tools honor per-run `tool_failure_modes` overrides consistently;

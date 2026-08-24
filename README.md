@@ -74,10 +74,10 @@ normalization before each run.
 
 MainModel and VisionModel are public protocols. Applications may inject
 different transports, endpoints, credentials, or fakes. LiteLLMMainModel and
-LiteLLMVisionModel are optional implementations:
+LiteLLMVisionModel are the default implementations and are included with Myli:
 
 ~~~bash
-python -m pip install "myli[litellm]"
+python -m pip install myli
 ~~~
 
 The LiteLLM main implementation supports structured, JSON, and text output
@@ -98,8 +98,7 @@ with the current run ID, isolated evidence, zero-based model step, run-unique
 step and tool-batch IDs, and its zero-based position and size within that batch:
 
 ~~~python
-async def execute(arguments, context):
-    ...
+async def execute(arguments, context): ...
 ~~~
 
 Myli validates arguments and results, enforces capabilities and limits, and

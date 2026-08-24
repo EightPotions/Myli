@@ -1,5 +1,6 @@
 """Tests for the public Myli package interface."""
 
+import importlib.metadata
 import inspect
 import unittest
 
@@ -32,6 +33,16 @@ def test_model_backend_is_not_part_of_the_public_api() -> None:
     assert "vision_agent" not in parameters
     assert not hasattr(myli, "LiteLLMMainAgent")
     assert not hasattr(myli, "LiteLLMVisionAgent")
+
+
+def test_litellm_is_a_default_dependency() -> None:
+    requirements = importlib.metadata.requires("myli") or []
+    litellm_requirements = [requirement for requirement in requirements if requirement.lower().startswith("litellm")]
+    provided_extras = importlib.metadata.metadata("myli").get_all("Provides-Extra") or []
+
+    assert litellm_requirements
+    assert all("extra ==" not in requirement for requirement in litellm_requirements)
+    assert "litellm" in provided_extras
 
 
 def test_stable_exception_taxonomy_is_public() -> None:

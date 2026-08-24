@@ -1121,12 +1121,10 @@ name = "myli"
 source = { editable = "." }
 dependencies = [
     { name = "jsonschema" },
+    { name = "litellm" },
 ]
 
 [package.optional-dependencies]
-litellm = [
-    { name = "litellm" },
-]
 pydantic = [
     { name = "pydantic" },
 ]
@@ -1139,7 +1137,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "jsonschema", specifier = ">=4.18.0" },
-    { name = "litellm", marker = "extra == 'litellm'", specifier = ">=1.40.0" },
+    { name = "litellm", specifier = ">=1.40.0" },
     { name = "pydantic", marker = "extra == 'pydantic'", specifier = ">=2.0" },
 ]
 provides-extras = ["litellm", "pydantic"]

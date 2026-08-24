@@ -25,8 +25,8 @@ validation and rejects a validator or serializer that silently changes model
 output.
 
 MainModel and VisionModel are public protocols. Applications can inject fakes,
-custom transports, or different providers. LiteLLM is one optional integration
-with separate main and vision configuration.
+custom transports, or different providers. LiteLLM is the default integration
+and supports separate main and vision configuration.
 
 ## Evidence and policy
 

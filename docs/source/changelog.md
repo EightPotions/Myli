@@ -5,6 +5,12 @@ the public contracts evolve.
 
 ## Unreleased
 
+## 0.1.3
+
+- A successful `render_design` call returns a run-scoped reference that
+  `commit_render` can select without rendering again. Final responses may use
+  `patch: null` or an equivalent patch; committed proposals are rechecked by
+  final-phase policies with all outcomes.
 - The main model can ask one or more bounded, open, image-grounded questions when
   rendering a design or inspecting an asset preview.
 - LiteLLM is now the default model provider and is installed with Myli; custom

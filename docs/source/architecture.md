@@ -51,7 +51,11 @@ validation.
 
 Rendering receives a strictly validated candidate. The returned artifact is
 validated before the configured vision model receives it. The model's text
-review is a normal tool result; raw artifact bytes are excluded from traces.
+review is a normal tool result; raw artifact bytes are excluded from traces. A
+successful render receives a run-scoped reference and can later be committed as
+the run proposal without rendering again. The selection remains isolated run
+state and is revalidated with final-phase policy evidence; Myli never applies or
+persists it.
 
 ## Isolation and ownership
 

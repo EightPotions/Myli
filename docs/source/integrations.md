@@ -68,6 +68,18 @@ details. `inspect_asset` supports the same optional array for asset previews.
 Questions are bounded by {py:class}`~myli.HarnessLimits`, treated as untrusted
 data, and must be answered only from visible evidence.
 
+A successful `render_design` call returns a run-scoped `render_ref`. Pass that
+reference to `commit_render` to select the already rendered document as the
+run's proposal without invoking the renderer or vision model again. Commit is
+selection, not persistence: the application still decides whether to save
+{py:attr}`myli.RunResult.design`. After a commit, the model should return
+`patch: null`. Myli also accepts a final patch that produces a canonically
+identical document; a conflicting patch is a normal validation failure and
+retry. Before returning, candidate policies run in the `final` phase with every
+completed tool outcome. `RunResult.design`, `changed`, and `patch` describe the
+committed render, while uncommitted renders remain previews only. Committing a
+render requires `can_edit=True`.
+
 ## Asset search
 
 Each asset search adapter becomes a separately named model tool such as

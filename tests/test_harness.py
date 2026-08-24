@@ -163,6 +163,52 @@ def searched_asset_ref(request: ModelRequest, *, source: str, asset_id: str) -> 
     raise AssertionError(f"No asset {source}:{asset_id} was present in the model request.")
 
 
+def latest_render_ref(request: ModelRequest) -> str:
+    for message in reversed(request.messages):
+        if message.role != "tool" or message.content is None:
+            continue
+        payload = json.loads(message.content)
+        render_ref = payload.get("render_ref")
+        if isinstance(render_ref, str):
+            return render_ref
+    raise AssertionError("No successful render was present in the model request.")
+
+
+def first_render_ref(request: ModelRequest) -> str:
+    for message in request.messages:
+        if message.role != "tool" or message.content is None:
+            continue
+        payload = json.loads(message.content)
+        render_ref = payload.get("render_ref")
+        if isinstance(render_ref, str):
+            return render_ref
+    raise AssertionError("No successful render was present in the model request.")
+
+
+def commit_latest_render(request: ModelRequest) -> ModelResponse:
+    return ModelResponse(
+        tool_calls=(
+            ToolCall(
+                id="commit-render",
+                name="commit_render",
+                arguments={"render_ref": latest_render_ref(request)},
+            ),
+        )
+    )
+
+
+def commit_first_render(request: ModelRequest) -> ModelResponse:
+    return ModelResponse(
+        tool_calls=(
+            ToolCall(
+                id="commit-render",
+                name="commit_render",
+                arguments={"render_ref": first_render_ref(request)},
+            ),
+        )
+    )
+
+
 def test_agent_can_return_advice_without_editing() -> None:
     model = FakeMainAgent(
         [ModelResponse(content=json.dumps({"message": "Increase contrast around the title.", "patch": None}))]
@@ -180,7 +226,7 @@ def test_agent_can_return_advice_without_editing() -> None:
     assert result.design is None
     assert result.changed is False
     assert result.patch is None
-    assert [tool.name for tool in model.requests[0].tools] == ["render_design"]
+    assert [tool.name for tool in model.requests[0].tools] == ["render_design", "commit_render"]
     assert model.requests[0].output_schema["required"] == ["message", "patch"]
 
 
@@ -334,6 +380,238 @@ def test_agent_can_render_review_and_return_a_validated_edit() -> None:
     assert all(event.step_id == result.traces[1].step_id for event in events[5:-1])
     assert all(event.safe_message == event.message for event in events)
     assert all(event.elapsed_seconds >= 0 for event in events)
+
+
+def test_agent_can_commit_a_render_and_return_null_final_patch() -> None:
+    committed = {"background": "#f5efe6", "elements": []}
+    previewed = {"background": "#000000", "elements": []}
+    committed_patch = [{"op": "replace", "path": "/background", "value": "#f5efe6"}]
+    policy_contexts: list[CandidateContext] = []
+
+    def capture_policy_context(
+        candidate: dict[str, Any],
+        current: dict[str, Any],
+        context: CandidateContext,
+    ) -> None:
+        del candidate, current
+        policy_contexts.append(context)
+
+    model = FakeMainAgent(
+        [
+            ModelResponse(
+                tool_calls=(
+                    ToolCall(
+                        id="render-selected",
+                        name="render_design",
+                        arguments={"patch": committed_patch},
+                    ),
+                )
+            ),
+            ModelResponse(
+                tool_calls=(
+                    ToolCall(
+                        id="render-preview",
+                        name="render_design",
+                        arguments={
+                            "patch": [
+                                {
+                                    "op": "replace",
+                                    "path": "/background",
+                                    "value": "#000000",
+                                }
+                            ]
+                        },
+                    ),
+                )
+            ),
+            commit_first_render,
+            ModelResponse(content=json.dumps({"message": "I selected the warm render.", "patch": None})),
+        ]
+    )
+    renderer = FakeRenderer()
+    harness = Myli(
+        main_model=model,
+        vision_model=FakeVisionAgent(),
+        design_spec=DESIGN_SPEC,
+        renderer=renderer,
+        candidate_policies=[capture_policy_context],
+    )
+
+    result = asyncio.run(
+        harness.run(
+            request="Preview two backgrounds and use the warmer one.",
+            design=CURRENT_DESIGN,
+            can_edit=True,
+        )
+    )
+
+    assert renderer.designs == [committed, previewed]
+    assert result.design == committed
+    assert result.changed is True
+    assert result.patch == tuple(committed_patch)
+    assert result.traces[0].tool_outcomes[0].result["render_ref"] == "render:1"
+    assert result.traces[1].tool_outcomes[0].result["render_ref"] == "render:2"
+    assert result.traces[2].tool_outcomes[0].result == {
+        "render_ref": "render:1",
+        "committed": True,
+    }
+    assert [context.phase for context in policy_contexts] == ["render", "render", "final"]
+    assert [outcome.call_id for outcome in policy_contexts[-1].tool_outcomes] == [
+        "render-selected",
+        "render-preview",
+        "commit-render",
+    ]
+
+
+def test_matching_final_patch_keeps_the_committed_render_patch() -> None:
+    committed_patch = [{"op": "replace", "path": "/background", "value": "#f5efe6"}]
+    model = FakeMainAgent(
+        [
+            ModelResponse(
+                tool_calls=(
+                    ToolCall(
+                        id="render-selected",
+                        name="render_design",
+                        arguments={"patch": committed_patch},
+                    ),
+                )
+            ),
+            commit_latest_render,
+            ModelResponse(
+                content=json.dumps(
+                    {
+                        "message": "I selected the warm render.",
+                        "patch": [
+                            {"op": "test", "path": "/background", "value": "#ffffff"},
+                            *committed_patch,
+                        ],
+                    }
+                )
+            ),
+        ]
+    )
+    harness = Myli(
+        main_model=model,
+        vision_model=FakeVisionAgent(),
+        design_spec=DESIGN_SPEC,
+        renderer=FakeRenderer(),
+    )
+
+    result = asyncio.run(harness.run(request="Warm the background.", design=CURRENT_DESIGN, can_edit=True))
+
+    assert result.design == {"background": "#f5efe6", "elements": []}
+    assert result.patch == tuple(committed_patch)
+
+
+def test_conflicting_final_patch_after_commit_uses_validation_retry() -> None:
+    committed_patch = [{"op": "replace", "path": "/background", "value": "#f5efe6"}]
+    model = FakeMainAgent(
+        [
+            ModelResponse(
+                tool_calls=(
+                    ToolCall(
+                        id="render-selected",
+                        name="render_design",
+                        arguments={"patch": committed_patch},
+                    ),
+                )
+            ),
+            commit_latest_render,
+            ModelResponse(
+                content=json.dumps(
+                    {
+                        "message": "I selected a dark background.",
+                        "patch": [{"op": "replace", "path": "/background", "value": "#000000"}],
+                    }
+                )
+            ),
+            ModelResponse(content=json.dumps({"message": "I selected the warm render.", "patch": None})),
+        ]
+    )
+    harness = Myli(
+        main_model=model,
+        vision_model=FakeVisionAgent(),
+        design_spec=DESIGN_SPEC,
+        renderer=FakeRenderer(),
+    )
+
+    result = asyncio.run(harness.run(request="Warm the background.", design=CURRENT_DESIGN, can_edit=True))
+
+    assert result.design == {"background": "#f5efe6", "elements": []}
+    assert result.patch == tuple(committed_patch)
+    assert "conflicts with the committed render" in result.traces[2].validation_failures[0]
+    assert "previous final response was invalid" in (model.requests[3].messages[-1].content or "")
+
+
+def test_uncommitted_render_does_not_affect_run_result() -> None:
+    model = FakeMainAgent(
+        [
+            ModelResponse(
+                tool_calls=(
+                    ToolCall(
+                        id="render-preview",
+                        name="render_design",
+                        arguments={
+                            "patch": [
+                                {
+                                    "op": "replace",
+                                    "path": "/background",
+                                    "value": "#f5efe6",
+                                }
+                            ]
+                        },
+                    ),
+                )
+            ),
+            ModelResponse(content=json.dumps({"message": "I only previewed it.", "patch": None})),
+        ]
+    )
+    harness = Myli(
+        main_model=model,
+        vision_model=FakeVisionAgent(),
+        design_spec=DESIGN_SPEC,
+        renderer=FakeRenderer(),
+    )
+
+    result = asyncio.run(harness.run(request="Preview a warm background.", design=CURRENT_DESIGN, can_edit=True))
+
+    assert result.design is None
+    assert result.changed is False
+    assert result.patch is None
+
+
+def test_render_commit_is_rejected_when_editing_is_disabled() -> None:
+    model = FakeMainAgent(
+        [
+            ModelResponse(
+                tool_calls=(
+                    ToolCall(
+                        id="render-diagnostic",
+                        name="render_design",
+                        arguments={"patch": []},
+                    ),
+                )
+            ),
+            commit_latest_render,
+            ModelResponse(content=json.dumps({"message": "I did not change it.", "patch": None})),
+        ]
+    )
+    renderer = FakeRenderer()
+    harness = Myli(
+        main_model=model,
+        vision_model=FakeVisionAgent(),
+        design_spec=DESIGN_SPEC,
+        renderer=renderer,
+    )
+
+    result = asyncio.run(harness.run(request="Review the current design.", design=CURRENT_DESIGN))
+
+    assert renderer.designs == [CURRENT_DESIGN]
+    assert result.design is None
+    assert result.patch is None
+    outcome = result.traces[1].tool_outcomes[0]
+    assert outcome.status == "rejected"
+    assert "cannot be committed" in (outcome.message or "")
 
 
 def test_invalid_vision_questions_are_rejected_before_rendering() -> None:
@@ -679,6 +957,7 @@ def test_multiple_asset_search_tools_and_preview_inspection_share_approved_asset
     tool_names = [tool.name for tool in model.requests[0].tools]
     assert tool_names == [
         "render_design",
+        "commit_render",
         "search_assets_stock",
         "search_assets_icons",
         "inspect_asset",
@@ -748,6 +1027,7 @@ def test_asset_search_supports_non_image_assets_and_visual_previews() -> None:
 
     assert [tool.name for tool in model.requests[0].tools] == [
         "render_design",
+        "commit_render",
         "search_assets_library",
         "inspect_asset",
     ]
@@ -944,6 +1224,13 @@ def test_patch_schemas_do_not_embed_the_complete_design_schema() -> None:
     assert set(render_schema["properties"]) == {"patch", "questions"}
     assert render_schema["properties"]["questions"]["maxItems"] == 8
     assert "$defs" not in render_schema
+    commit_schema = harness._tool_definitions[1].input_schema
+    assert commit_schema == {
+        "type": "object",
+        "properties": {"render_ref": {"type": "string", "minLength": 1}},
+        "required": ["render_ref"],
+        "additionalProperties": False,
+    }
     assert set(harness._output_schema["properties"]) == {"message", "patch"}
     assert "$defs" not in harness._output_schema
 

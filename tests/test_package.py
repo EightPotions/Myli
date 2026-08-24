@@ -9,7 +9,7 @@ import myli
 
 def test_version_is_exposed() -> None:
     """The package exposes its current release version."""
-    assert myli.__version__ == "0.1.2"
+    assert myli.__version__ == "0.1.3"
 
 
 def test_core_harness_is_exposed() -> None:

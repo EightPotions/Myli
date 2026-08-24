@@ -32,6 +32,7 @@ With `can_edit=False`:
 - the final patch must be `null`;
 - diagnostic rendering remains available;
 - only a patch producing the unchanged current document may be rendered.
+- diagnostic renders cannot be committed as proposals.
 
 The application should calculate `can_edit` from its authorization layer and
 must still decide whether to save the returned candidate.

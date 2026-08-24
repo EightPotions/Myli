@@ -62,7 +62,11 @@ renderer = FunctionRenderer(render)
 
 Myli sends the rendered artifact to its vision client and returns factual visual
 feedback to the main model. The vision client does not receive authority to
-mutate or persist the document.
+mutate or persist the document. Calls to `render_design` may include a `questions`
+array, allowing the main model to ask one or more open questions about visible
+details. `inspect_asset` supports the same optional array for asset previews.
+Questions are bounded by {py:class}`~myli.HarnessLimits`, treated as untrusted
+data, and must be answered only from visible evidence.
 
 ## Asset search
 
@@ -188,6 +192,8 @@ limits = HarnessLimits(
     max_renders=2,
     max_searches_per_provider=2,
     max_asset_inspections=4,
+    max_vision_questions=6,
+    max_vision_question_chars=1000,
     max_search_results=6,
     model_timeout_seconds=90,
     render_timeout_seconds=20,

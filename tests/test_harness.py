@@ -187,6 +187,7 @@ def test_agent_can_return_advice_without_editing() -> None:
 def test_asset_inspection_limit_is_configurable() -> None:
     assert HarnessLimits().max_asset_inspections == 6
     assert HarnessLimits(max_asset_inspections=2).max_asset_inspections == 2
+    assert HarnessLimits(max_vision_questions=3).max_vision_questions == 3
 
 
 def test_model_protocol_error_is_retried_with_a_correction_prompt() -> None:
@@ -257,7 +258,13 @@ def test_agent_can_render_review_and_return_a_validated_edit() -> None:
     render_call = ToolCall(
         id="render-1",
         name="render_design",
-        arguments={"patch": [{"op": "replace", "path": "/background", "value": "#f5efe6"}]},
+        arguments={
+            "patch": [{"op": "replace", "path": "/background", "value": "#f5efe6"}],
+            "questions": [
+                "Is the title still the strongest element?",
+                "Does the warmer background reduce contrast?",
+            ],
+        },
     )
     model = FakeMainAgent(
         [
@@ -306,6 +313,8 @@ def test_agent_can_render_review_and_return_a_validated_edit() -> None:
     assert renderer.designs == [candidate]
     assert vision.reviews[0][0].data == b"rendered-poster"
     assert "Make the background warmer" in vision.reviews[0][1]
+    assert "Is the title still the strongest element?" in vision.reviews[0][1]
+    assert "Does the warmer background reduce contrast?" in vision.reviews[0][1]
     assert json.loads(model.requests[1].messages[-1].content)["visual_review"]
     assert [event.kind for event in events] == [
         "run.started",
@@ -325,6 +334,36 @@ def test_agent_can_render_review_and_return_a_validated_edit() -> None:
     assert all(event.step_id == result.traces[1].step_id for event in events[5:-1])
     assert all(event.safe_message == event.message for event in events)
     assert all(event.elapsed_seconds >= 0 for event in events)
+
+
+def test_invalid_vision_questions_are_rejected_before_rendering() -> None:
+    render_call = ToolCall(
+        id="render-1",
+        name="render_design",
+        arguments={"patch": [], "questions": ["   "]},
+    )
+    model = FakeMainAgent(
+        [
+            ModelResponse(tool_calls=(render_call,)),
+            ModelResponse(content=json.dumps({"message": "The questions were invalid.", "patch": None})),
+        ]
+    )
+    renderer = FakeRenderer()
+    vision = FakeVisionAgent()
+    harness = Myli(
+        main_model=model,
+        vision_model=vision,
+        design_spec=DESIGN_SPEC,
+        renderer=renderer,
+    )
+
+    result = asyncio.run(harness.run(request="Inspect the design.", design=CURRENT_DESIGN))
+
+    outcome = result.traces[0].tool_outcomes[0]
+    assert outcome.status == "rejected"
+    assert "questions[0] cannot be empty" in (outcome.message or "")
+    assert renderer.designs == []
+    assert vision.reviews == []
 
 
 def test_custom_agent_tool_enforces_capabilities_and_per_run_limit() -> None:
@@ -674,7 +713,8 @@ def test_asset_search_supports_non_image_assets_and_visual_previews() -> None:
                             request,
                             source="library",
                             asset_id="font-1",
-                        )
+                        ),
+                        "questions": ["Would this remain legible in a compact navigation bar?"],
                     },
                 ),
             )
@@ -721,6 +761,7 @@ def test_asset_search_supports_non_image_assets_and_visual_previews() -> None:
     ]
     assert all(asset.run_id == result.run_id for asset in result.approved_assets)
     assert "discovered font preview" in vision.reviews[0][1]
+    assert "Would this remain legible in a compact navigation bar?" in vision.reviews[0][1]
 
 
 def test_editing_disabled_retries_a_model_that_returns_a_patch() -> None:
@@ -900,7 +941,8 @@ def test_patch_schemas_do_not_embed_the_complete_design_schema() -> None:
     )
 
     render_schema = harness._tool_definitions[0].input_schema
-    assert set(render_schema["properties"]) == {"patch"}
+    assert set(render_schema["properties"]) == {"patch", "questions"}
+    assert render_schema["properties"]["questions"]["maxItems"] == 8
     assert "$defs" not in render_schema
     assert set(harness._output_schema["properties"]) == {"message", "patch"}
     assert "$defs" not in harness._output_schema

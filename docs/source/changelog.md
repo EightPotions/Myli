@@ -5,6 +5,8 @@ the public contracts evolve.
 
 ## Unreleased
 
+- The main model can ask one or more bounded, open, image-grounded questions when
+  rendering a design or inspecting an asset preview.
 - LiteLLM is now the default model provider and is installed with Myli; custom
   MainModel and VisionModel implementations remain injectable. The previous
   `litellm` extra remains available as a compatibility alias.

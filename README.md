@@ -132,9 +132,11 @@ step trace dictionaries.
 
 When a renderer and vision model are configured, render_design validates the
 candidate and application policies before rendering, validates the artifact,
-and returns visual feedback as a tool result. A changed candidate cannot be
-rendered while editing is disabled, but the unchanged current design can be
-rendered diagnostically.
+and returns visual feedback as a tool result. The main model can attach a bounded
+`questions` array to ask one or more open, image-grounded questions about a
+rendered design or inspected asset preview. A changed candidate cannot be rendered
+while editing is disabled, but the unchanged current design can be rendered
+diagnostically.
 
 ## Events, traces, and limits
 

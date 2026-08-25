@@ -28,6 +28,12 @@ MainModel and VisionModel are public protocols. Applications can inject fakes,
 custom transports, or different providers. LiteLLM is the default integration
 and supports separate main and vision configuration.
 
+VisionModel receives a VisualReviewRequest containing one or more labeled images,
+the review prompt, optional system guidance, detail hints, and an optional JSON
+Schema. This keeps image order and semantic roles explicit across the main-agent to
+vision-agent boundary. The LiteLLM adapter validates structured responses before
+they become tool evidence.
+
 ## Evidence and policy
 
 Every tool call produces a run-scoped ToolOutcome. CandidateContext exposes all
@@ -49,13 +55,25 @@ artifacts can be eager or lazy. Lazy resolution is cached only within the run,
 is available only after discovery, and is guarded by timeout, size, and media
 validation.
 
+Application-provided inputs use a separate run-scoped InputArtifact registry.
+Descriptors are visible to the main model and application tools, while eager bytes
+or lazy loaders remain in memory. `ToolContext.load_input_artifact()` validates and
+caches the resolved image for that run, so inspection and comparison tools share the
+same artifact without owning duplicate caches.
+
 Rendering receives a strictly validated candidate. The returned artifact is
-validated before the configured vision model receives it. The model's text
-review is a normal tool result; raw artifact bytes are excluded from traces. A
+validated before the configured vision model receives it. The model's textual or
+structured JSON review is a normal tool result; raw artifact bytes are excluded
+from traces. A
 successful render receives a run-scoped reference and can later be committed as
 the run proposal without rendering again. The selection remains isolated run
 state and is revalidated with final-phase policy evidence; Myli never applies or
 persists it.
+
+Application tools can access successful run-scoped render artifacts through
+``ToolContext.rendered_artifacts``. The mapping is transient and keyed by the same
+``render_ref`` values returned by ``render_design``; artifact bytes remain excluded
+from outcomes and persisted traces.
 
 ## Isolation and ownership
 

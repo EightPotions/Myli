@@ -7,13 +7,16 @@ import json
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any, Literal
 
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
+
 from ._json import strict_json_loads, validate_json_value
 from .contracts import (
     Message,
     ModelRequest,
     ModelResponse,
-    RenderedArtifact,
     ToolCall,
+    VisualReviewRequest,
 )
 from .errors import (
     ConfigurationError,
@@ -46,6 +49,7 @@ _RESERVED_VISION_KWARGS = {
     "base_url",
     "model",
     "messages",
+    "response_format",
     "stream",
 }
 
@@ -178,35 +182,64 @@ class LiteLLMVisionModel:
             parameter="vision_options",
         )
 
-    async def review(self, artifact: RenderedArtifact, *, prompt: str) -> str:
-        """Send an in-memory rendered artifact to the vision model."""
+    async def review(self, request: VisualReviewRequest) -> str | Mapping[str, Any]:
+        """Send a validated one- or multi-image request to the vision model."""
 
-        if not artifact.data:
-            raise ValueError("Vision artifacts cannot be empty.")
-        if not artifact.media_type.startswith("image/"):
-            raise ValueError("Vision artifacts must use an image media type.")
-        prompt = prompt.strip()
-        if not prompt:
-            raise ValueError("Vision prompt cannot be empty.")
+        if not isinstance(request, VisualReviewRequest):
+            raise TypeError("Vision requests must use VisualReviewRequest.")
 
-        image_data = base64.b64encode(artifact.data).decode("ascii")
-        response = await self._client.complete(
-            **self.options,
-            messages=[
-                {"role": "system", "content": self.system_prompt},
+        user_content: list[dict[str, Any]] = []
+        for image in request.images:
+            artifact = image.artifact
+            if not artifact.data:
+                raise ValueError("Vision artifacts cannot be empty.")
+            if not artifact.media_type.startswith("image/"):
+                raise ValueError("Vision artifacts must use an image media type.")
+            width = artifact.metadata.get("width")
+            height = artifact.metadata.get("height")
+            dimensions = (
+                f" Original dimensions: {width} by {height} pixels."
+                if isinstance(width, int)
+                and not isinstance(width, bool)
+                and isinstance(height, int)
+                and not isinstance(height, bool)
+                else " Original dimensions are unavailable."
+            )
+            user_content.append({"type": "text", "text": f"{image.label}.{dimensions}"})
+            image_data = base64.b64encode(artifact.data).decode("ascii")
+            user_content.append(
                 {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": (f"data:{artifact.media_type};base64,{image_data}")},
-                        },
-                    ],
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{artifact.media_type};base64,{image_data}",
+                        "detail": image.detail,
+                    },
+                }
+            )
+        user_content.append({"type": "text", "text": request.prompt})
+
+        call_kwargs: dict[str, Any] = {
+            **self.options,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": request.system_prompt or self.system_prompt,
                 },
+                {"role": "user", "content": user_content},
             ],
-            stream=False,
-        )
+            "stream": False,
+        }
+        if request.response_schema is not None:
+            call_kwargs["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": request.response_schema_name,
+                    "schema": dict(request.response_schema),
+                    "strict": True,
+                },
+            }
+
+        response = await self._client.complete(**call_kwargs)
         try:
             message = _response_message(response)
             content = _content_text(_value(message, "content"))
@@ -216,7 +249,19 @@ class LiteLLMVisionModel:
             raise ModelProtocolError("Vision model response could not be normalized.") from exc
         if not content.strip():
             raise ModelProtocolError("Vision model response was empty.")
-        return content.strip()
+        content = content.strip()
+        if request.response_schema is None:
+            return content
+        try:
+            structured = strict_json_loads(content)
+            if not isinstance(structured, Mapping):
+                raise TypeError("Structured vision output must be a JSON object.")
+            structured = dict(structured)
+            Draft202012Validator(request.response_schema).validate(structured)
+            validate_json_value(structured)
+        except (TypeError, ValueError, JsonSchemaValidationError) as exc:
+            raise ModelProtocolError("Vision model response did not match the requested JSON schema.") from exc
+        return structured
 
 
 def _load_completion_function() -> CompletionFunction:

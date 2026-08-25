@@ -84,6 +84,15 @@ The LiteLLM main implementation supports structured, JSON, and text output
 modes, rejects options that override client-owned request fields, and translates
 provider failures into Myli's stable exception hierarchy.
 
+Vision calls use `VisualReviewRequest`, which keeps labels and ordering explicit
+for one or more images and can request output with an application-owned JSON
+Schema. `LiteLLMVisionModel` handles the multi-image transport and validates
+structured output.
+
+Application attachments can be passed to `Myli.run(input_artifacts=...)` as eager
+or lazy `InputArtifact` values. They are isolated to the run and available to tools
+through `ToolContext.input_artifacts` and `load_input_artifact()`.
+
 Pydantic remains optional:
 
 ~~~python

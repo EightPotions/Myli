@@ -5,6 +5,31 @@ the public contracts evolve.
 
 ## Unreleased
 
+## 0.2.0
+
+- `VisualReviewRequest` and `VisualReviewImage` now carry labeled one- or
+  multi-image reviews, image-detail hints, per-request system guidance, and an
+  optional strict JSON output schema across the provider-neutral vision boundary.
+- `LiteLLMVisionModel` transports multi-image requests and validates structured
+  results against the requested JSON Schema before returning them.
+- `Myli.run(input_artifacts=...)` registers eager or lazy application inputs for
+  one run. Tools see descriptors in `ToolContext.input_artifacts` and load bounded,
+  cached bytes with `ToolContext.load_input_artifact()`.
+- Input descriptors are included in the main-model run prompt while artifact bytes,
+  loaders, and credentials remain excluded.
+
+Migration: implementations of `VisionModel.review` now accept one
+`VisualReviewRequest` instead of separate `RenderedArtifact` and `prompt`
+arguments.
+
+## 0.1.4
+
+- Successful run-scoped render artifacts are available transiently to application
+  tools through `ToolContext.rendered_artifacts`, keyed by the `render_ref` returned
+  by `render_design`. Artifact bytes remain excluded from outcomes and traces.
+- Vision models may return either text or a structured JSON object; structured
+  reviews remain objects in render and asset-inspection tool results.
+
 ## 0.1.3
 
 - A successful `render_design` call returns a run-scoped reference that

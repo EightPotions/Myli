@@ -23,6 +23,8 @@ from myli import (
     RenderedArtifact,
     ToolCall,
     ToolDefinition,
+    VisualReviewImage,
+    VisualReviewRequest,
 )
 
 
@@ -277,20 +279,144 @@ def test_vision_client_sends_an_in_memory_data_url() -> None:
     )
     review = asyncio.run(
         vision.review(
-            RenderedArtifact(b"test-png", "image/png"),
-            prompt="Review this poster.",
+            VisualReviewRequest(
+                images=(
+                    VisualReviewImage(
+                        RenderedArtifact(b"test-png", "image/png"),
+                        label="Rendered poster",
+                    ),
+                ),
+                prompt="Review this poster.",
+            )
         )
     )
 
     call = calls[0]
     content = call["messages"][1]["content"]
-    assert content[0] == {"type": "text", "text": "Review this poster."}
+    assert content[0] == {
+        "type": "text",
+        "text": "Rendered poster. Original dimensions are unavailable.",
+    }
     assert content[1]["image_url"]["url"] == ("data:image/png;base64," + base64.b64encode(b"test-png").decode("ascii"))
+    assert content[2] == {"type": "text", "text": "Review this poster."}
     assert call["max_tokens"] == 500
     assert call["api_base"] == "https://vision.example.test/v1"
     assert call["api_key"] == "vision-secret"
     assert call["stream"] is False
     assert review == "Strong hierarchy. Increase contrast."
+
+
+def test_vision_client_sends_multiple_labeled_images_and_validates_schema() -> None:
+    calls = []
+
+    async def completion(**kwargs):
+        calls.append(kwargs)
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "summary": "The title is too low.",
+                                "ready_to_commit": False,
+                            }
+                        )
+                    }
+                }
+            ]
+        }
+
+    schema = {
+        "type": "object",
+        "properties": {
+            "summary": {"type": "string"},
+            "ready_to_commit": {"type": "boolean"},
+        },
+        "required": ["summary", "ready_to_commit"],
+        "additionalProperties": False,
+    }
+    vision = LiteLLMVisionModel(
+        model="openai/vision-test",
+        completion=completion,
+    )
+
+    review = asyncio.run(
+        vision.review(
+            VisualReviewRequest(
+                images=(
+                    VisualReviewImage(
+                        RenderedArtifact(
+                            b"reference",
+                            "image/png",
+                            {"width": 320, "height": 180},
+                        ),
+                        label="Image 1: reference",
+                        detail="original",
+                    ),
+                    VisualReviewImage(
+                        RenderedArtifact(
+                            b"render",
+                            "image/png",
+                            {"width": 720, "height": 720},
+                        ),
+                        label="Image 2: reconstruction",
+                        detail="original",
+                    ),
+                ),
+                prompt="Compare them directly.",
+                system_prompt="Return evidence only.",
+                response_schema=schema,
+                response_schema_name="design_comparison",
+            )
+        )
+    )
+
+    call = calls[0]
+    assert call["messages"][0]["content"] == "Return evidence only."
+    content = call["messages"][1]["content"]
+    assert len([item for item in content if item["type"] == "image_url"]) == 2
+    assert "320 by 180 pixels" in content[0]["text"]
+    assert content[1]["image_url"]["detail"] == "original"
+    assert "720 by 720 pixels" in content[2]["text"]
+    assert call["response_format"]["json_schema"] == {
+        "name": "design_comparison",
+        "schema": schema,
+        "strict": True,
+    }
+    assert review == {
+        "summary": "The title is too low.",
+        "ready_to_commit": False,
+    }
+
+
+def test_vision_client_rejects_structured_output_that_misses_required_evidence() -> None:
+    async def completion(**kwargs):
+        del kwargs
+        return {"choices": [{"message": {"content": json.dumps({"summary": "Incomplete output."})}}]}
+
+    vision = LiteLLMVisionModel(
+        model="openai/vision-test",
+        completion=completion,
+    )
+    request = VisualReviewRequest(
+        images=(VisualReviewImage(RenderedArtifact(b"image", "image/png")),),
+        prompt="Compare the evidence.",
+        response_schema={
+            "type": "object",
+            "properties": {
+                "summary": {"type": "string"},
+                "ready_to_commit": {"type": "boolean"},
+            },
+            "required": ["summary", "ready_to_commit"],
+            "additionalProperties": False,
+        },
+    )
+
+    with unittest.TestCase().assertRaisesRegex(
+        ModelProtocolError,
+        "requested JSON schema",
+    ):
+        asyncio.run(vision.review(request))
 
 
 def test_myli_constructor_builds_model_clients_from_generic_settings() -> None:

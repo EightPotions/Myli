@@ -21,6 +21,7 @@ JsonObject = dict[str, Any]
 TDesign = TypeVar("TDesign")
 TDesignContra = TypeVar("TDesignContra", contravariant=True)
 PreviewLoader = Callable[[], Awaitable["RenderedArtifact"]]
+InputArtifactLoader = Callable[[], Awaitable["RenderedArtifact"]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,12 +103,80 @@ class RenderedArtifact:
     metadata: Mapping[str, Any] = field(default_factory=dict, compare=False)
 
 
+@dataclass(frozen=True, slots=True)
+class VisualReviewImage:
+    """One labeled image in a visual-review request."""
+
+    artifact: RenderedArtifact
+    label: str = "Image"
+    detail: Literal["auto", "low", "high", "original"] = "auto"
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.artifact, RenderedArtifact):
+            raise TypeError("VisualReviewImage.artifact must use RenderedArtifact.")
+        if not isinstance(self.label, str) or not self.label.strip():
+            raise ValueError("VisualReviewImage.label cannot be empty.")
+        if self.detail not in {"auto", "low", "high", "original"}:
+            raise ValueError("VisualReviewImage.detail is invalid.")
+        object.__setattr__(self, "label", self.label.strip())
+
+
+@dataclass(frozen=True, slots=True)
+class VisualReviewRequest:
+    """Provider-neutral request for reviewing one or more labeled images."""
+
+    images: tuple[VisualReviewImage, ...]
+    prompt: str
+    system_prompt: str | None = None
+    response_schema: Mapping[str, Any] | None = field(default=None, compare=False)
+    response_schema_name: str = "visual_review"
+
+    def __post_init__(self) -> None:
+        images = tuple(self.images)
+        if not images:
+            raise ValueError("VisualReviewRequest.images cannot be empty.")
+        if any(not isinstance(image, VisualReviewImage) for image in images):
+            raise TypeError("VisualReviewRequest.images must contain VisualReviewImage values.")
+        if not isinstance(self.prompt, str) or not self.prompt.strip():
+            raise ValueError("VisualReviewRequest.prompt cannot be empty.")
+        if self.system_prompt is not None and (
+            not isinstance(self.system_prompt, str) or not self.system_prompt.strip()
+        ):
+            raise ValueError("VisualReviewRequest.system_prompt cannot be empty.")
+        if not isinstance(self.response_schema_name, str) or not self.response_schema_name.strip():
+            raise ValueError("VisualReviewRequest.response_schema_name cannot be empty.")
+
+        schema = self.response_schema
+        if schema is not None:
+            if not isinstance(schema, Mapping):
+                raise TypeError("VisualReviewRequest.response_schema must be a mapping.")
+            schema = copy.deepcopy(dict(schema))
+            try:
+                Draft202012Validator.check_schema(schema)
+            except SchemaError as exc:
+                raise ValueError(f"VisualReviewRequest.response_schema is invalid: {exc.message}") from exc
+
+        object.__setattr__(self, "images", images)
+        object.__setattr__(self, "prompt", self.prompt.strip())
+        if self.system_prompt is not None:
+            object.__setattr__(self, "system_prompt", self.system_prompt.strip())
+        object.__setattr__(
+            self,
+            "response_schema_name",
+            self.response_schema_name.strip(),
+        )
+        object.__setattr__(self, "response_schema", schema)
+
+
 @runtime_checkable
 class VisionModel(Protocol):
     """Injectable visual-review client."""
 
-    async def review(self, artifact: RenderedArtifact, *, prompt: str) -> str:
-        """Return textual feedback about a validated artifact."""
+    async def review(
+        self,
+        request: VisualReviewRequest,
+    ) -> str | Mapping[str, Any]:
+        """Return textual or structured JSON feedback about a validated artifact."""
 
 
 @runtime_checkable
@@ -156,6 +225,62 @@ class Asset:
             run_id=run_id,
             source=source,
             reference=reference,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class InputArtifact:
+    """An application-provided artifact made available only for one run.
+
+    Exactly one of ``artifact`` or ``loader`` supplies the bytes. Myli assigns the
+    run ID to an isolated copy and exposes it through ``ToolContext`` under ``id``.
+    """
+
+    id: str
+    kind: str = "input"
+    description: str | None = None
+    metadata: Mapping[str, Any] = field(default_factory=dict, compare=False)
+    artifact: RenderedArtifact | None = field(default=None, repr=False, compare=False)
+    loader: InputArtifactLoader | None = field(default=None, repr=False, compare=False)
+    run_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.id, str) or not self.id.strip():
+            raise ValueError("InputArtifact.id cannot be empty.")
+        if not isinstance(self.kind, str) or not self.kind.strip():
+            raise ValueError("InputArtifact.kind cannot be empty.")
+        if self.description is not None and not isinstance(self.description, str):
+            raise TypeError("InputArtifact.description must be text or None.")
+        if not isinstance(self.metadata, Mapping):
+            raise TypeError("InputArtifact.metadata must be a mapping.")
+        metadata = copy.deepcopy(dict(self.metadata))
+        validate_json_value(metadata)
+        if (self.artifact is None) == (self.loader is None):
+            raise ValueError("InputArtifact requires exactly one of artifact or loader.")
+        if self.artifact is not None and not isinstance(self.artifact, RenderedArtifact):
+            raise TypeError("InputArtifact.artifact must use RenderedArtifact.")
+        if self.loader is not None and not callable(self.loader):
+            raise TypeError("InputArtifact.loader must be callable.")
+
+        object.__setattr__(self, "id", self.id.strip())
+        object.__setattr__(self, "kind", self.kind.strip())
+        object.__setattr__(self, "metadata", metadata)
+
+    def for_run(self, *, run_id: str) -> InputArtifact:
+        """Return an isolated copy associated with one Myli run."""
+
+        artifact = self.artifact
+        if artifact is not None:
+            artifact = replace(
+                artifact,
+                data=bytes(artifact.data),
+                metadata=copy.deepcopy(dict(artifact.metadata)),
+            )
+        return replace(
+            self,
+            metadata=copy.deepcopy(dict(self.metadata)),
+            artifact=artifact,
+            run_id=run_id,
         )
 
 
@@ -309,9 +434,15 @@ class ToolContext:
     phase: str
     can_edit: bool
     capabilities: frozenset[str]
+    input_artifacts: Mapping[str, InputArtifact]
     approved_assets: tuple[Asset, ...]
     tool_outcomes: tuple[ToolOutcome, ...]
+    rendered_artifacts: Mapping[str, RenderedArtifact]
     request: str
+    _input_artifact_resolver: Callable[[str], Awaitable[RenderedArtifact]] = field(
+        repr=False,
+        compare=False,
+    )
     model_step: int | None = None
     model_step_id: str | None = None
     tool_batch_id: str | None = None
@@ -327,6 +458,13 @@ class ToolContext:
         """Whether this is the first requested call in its model tool batch."""
 
         return self.tool_batch_index == 0
+
+    async def load_input_artifact(self, artifact_id: str) -> RenderedArtifact:
+        """Load and validate one registered run input, with run-scoped caching."""
+
+        if artifact_id not in self.input_artifacts:
+            raise KeyError(f"Unknown input artifact: {artifact_id}")
+        return await self._input_artifact_resolver(artifact_id)
 
     @property
     def step(self) -> int | None:

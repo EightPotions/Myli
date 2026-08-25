@@ -16,6 +16,8 @@ from .contracts import (
     DesignSpec,
     EventHandler,
     FailureMode,
+    InputArtifact,
+    InputArtifactLoader,
     InputMigrator,
     MainModel,
     Message,
@@ -36,6 +38,8 @@ from .contracts import (
     ToolOutcome,
     TraceRedactor,
     VisionModel,
+    VisualReviewImage,
+    VisualReviewRequest,
 )
 from .errors import (
     ConfigurationError,
@@ -55,7 +59,7 @@ from .harness import HarnessLimits, Myli
 from .json_patch import JsonPatchLimits, apply_json_patch
 
 
-__version__ = "0.1.3"
+__version__ = "0.2.0"
 
 __all__ = [
     "EVENT_KINDS",
@@ -76,6 +80,8 @@ __all__ = [
     "FunctionAssetSearch",
     "FunctionRenderer",
     "HarnessLimits",
+    "InputArtifact",
+    "InputArtifactLoader",
     "InputMigrator",
     "JsonPatchError",
     "JsonPatchLimits",
@@ -110,6 +116,8 @@ __all__ = [
     "ToolMiddleware",
     "ToolOutcome",
     "TraceRedactor",
+    "VisualReviewImage",
+    "VisualReviewRequest",
     "VisionModel",
     "apply_json_patch",
     "__version__",

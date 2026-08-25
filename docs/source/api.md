@@ -54,6 +54,14 @@ available below myli.integrations.
 :members:
 ~~~
 
+~~~{autoclass} VisualReviewImage
+:members:
+~~~
+
+~~~{autoclass} VisualReviewRequest
+:members:
+~~~
+
 ## Models and messages
 
 ~~~{autoclass} MainModel
@@ -85,6 +93,10 @@ available below myli.integrations.
 ~~~
 
 ## Tools, middleware, and assets
+
+~~~{autoclass} InputArtifact
+:members:
+~~~
 
 ~~~{autoclass} AgentTool
 :members:

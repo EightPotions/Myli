@@ -16,6 +16,7 @@ from myli import (
     DesignSpec,
     FailureMode,
     HarnessLimits,
+    InputArtifact,
     Message,
     ModelProtocolError,
     ModelRequest,
@@ -25,6 +26,7 @@ from myli import (
     ToolCall,
     ToolContext,
     ToolExecutionError,
+    VisualReviewRequest,
     apply_json_patch,
 )
 
@@ -89,9 +91,22 @@ class FakeVisionAgent:
     def __init__(self) -> None:
         self.reviews: list[tuple[RenderedArtifact, str]] = []
 
-    async def review(self, artifact: RenderedArtifact, *, prompt: str) -> str:
-        self.reviews.append((artifact, prompt))
+    async def review(self, request: VisualReviewRequest) -> str:
+        self.reviews.append((request.images[0].artifact, request.prompt))
         return "The title has clear hierarchy; increase the lower image contrast."
+
+
+class FakeStructuredVisionAgent:
+    async def review(
+        self,
+        request: VisualReviewRequest,
+    ) -> dict[str, Any]:
+        del request
+        return {
+            "summary": "The title is aligned.",
+            "differences": [],
+            "ready_to_commit": True,
+        }
 
 
 class FakeSearch:
@@ -140,6 +155,59 @@ class FakeAgentTool:
         if self.delay:
             await asyncio.sleep(self.delay)
         return self.result
+
+
+class RenderArtifactCaptureTool:
+    name = "inspect_render_artifact"
+    description = "Inspect one successful render artifact."
+    input_schema = {
+        "type": "object",
+        "properties": {"render_ref": {"type": "string"}},
+        "required": ["render_ref"],
+        "additionalProperties": False,
+    }
+    required_capabilities = frozenset({"render.inspect"})
+    max_calls_per_run = 1
+    timeout_seconds = 1.0
+    max_result_bytes = 1024
+    failure_mode = FailureMode.RETURN_ERROR
+    parallel_safe = False
+
+    def __init__(self) -> None:
+        self.artifacts: list[RenderedArtifact] = []
+
+    async def execute(self, arguments: dict[str, Any], context: ToolContext) -> Any:
+        artifact = context.rendered_artifacts[arguments["render_ref"]]
+        self.artifacts.append(artifact)
+        return {"media_type": artifact.media_type, "size": len(artifact.data)}
+
+
+class InputArtifactCaptureTool:
+    name = "inspect_input_artifact"
+    description = "Inspect one application-provided input artifact."
+    input_schema = {
+        "type": "object",
+        "properties": {"artifact_id": {"type": "string"}},
+        "required": ["artifact_id"],
+        "additionalProperties": False,
+    }
+    required_capabilities = frozenset({"input.inspect"})
+    max_calls_per_run = 2
+    timeout_seconds = 1.0
+    max_result_bytes = 1024
+    failure_mode = FailureMode.RETURN_ERROR
+    parallel_safe = False
+
+    def __init__(self) -> None:
+        self.loaded: list[RenderedArtifact] = []
+        self.registered: list[InputArtifact] = []
+
+    async def execute(self, arguments: dict[str, Any], context: ToolContext) -> Any:
+        artifact_id = arguments["artifact_id"]
+        self.registered.append(context.input_artifacts[artifact_id])
+        artifact = await context.load_input_artifact(artifact_id)
+        self.loaded.append(artifact)
+        return {"media_type": artifact.media_type, "size": len(artifact.data)}
 
 
 CURRENT_DESIGN = {"background": "#ffffff", "elements": []}
@@ -380,6 +448,151 @@ def test_agent_can_render_review_and_return_a_validated_edit() -> None:
     assert all(event.step_id == result.traces[1].step_id for event in events[5:-1])
     assert all(event.safe_message == event.message for event in events)
     assert all(event.elapsed_seconds >= 0 for event in events)
+
+
+def test_structured_vision_review_remains_an_object_in_tool_results() -> None:
+    model = FakeMainAgent(
+        [
+            ModelResponse(
+                tool_calls=(
+                    ToolCall(
+                        id="render-structured",
+                        name="render_design",
+                        arguments={"patch": []},
+                    ),
+                )
+            ),
+            ModelResponse(content=json.dumps({"message": "Review complete.", "patch": None})),
+        ]
+    )
+    harness = Myli(
+        main_model=model,
+        vision_model=FakeStructuredVisionAgent(),
+        design_spec=DESIGN_SPEC,
+        renderer=FakeRenderer(),
+    )
+
+    result = asyncio.run(harness.run(request="Inspect it.", design=CURRENT_DESIGN))
+
+    review = result.tool_outcomes[0].result["visual_review"]
+    assert review == {
+        "summary": "The title is aligned.",
+        "differences": [],
+        "ready_to_commit": True,
+    }
+
+
+def test_application_tool_can_access_a_successful_render_by_reference() -> None:
+    render_call = ToolCall(
+        id="render-1",
+        name="render_design",
+        arguments={"patch": []},
+    )
+
+    def inspect_latest(request: ModelRequest) -> ModelResponse:
+        return ModelResponse(
+            tool_calls=(
+                ToolCall(
+                    id="inspect-render-1",
+                    name="inspect_render_artifact",
+                    arguments={"render_ref": latest_render_ref(request)},
+                ),
+            )
+        )
+
+    model = FakeMainAgent(
+        [
+            ModelResponse(tool_calls=(render_call,)),
+            inspect_latest,
+            ModelResponse(content=json.dumps({"message": "I inspected the render.", "patch": None})),
+        ]
+    )
+    capture = RenderArtifactCaptureTool()
+    harness = Myli(
+        main_model=model,
+        vision_model=FakeVisionAgent(),
+        design_spec=DESIGN_SPEC,
+        renderer=FakeRenderer(),
+        tools=(capture,),
+    )
+
+    result = asyncio.run(
+        harness.run(
+            request="Inspect the current render.",
+            design=CURRENT_DESIGN,
+            capabilities={"render.inspect"},
+        )
+    )
+
+    assert result.message == "I inspected the render."
+    assert capture.artifacts == [RenderedArtifact(b"rendered-poster", "image/png")]
+
+
+def test_application_tool_can_load_registered_inputs_once_per_run() -> None:
+    model = FakeMainAgent(
+        [
+            ModelResponse(
+                tool_calls=(
+                    ToolCall(
+                        id="inspect-input-1",
+                        name="inspect_input_artifact",
+                        arguments={"artifact_id": "attachment-1"},
+                    ),
+                    ToolCall(
+                        id="inspect-input-2",
+                        name="inspect_input_artifact",
+                        arguments={"artifact_id": "attachment-1"},
+                    ),
+                )
+            ),
+            ModelResponse(content=json.dumps({"message": "I inspected the attachment.", "patch": None})),
+        ]
+    )
+    load_calls = 0
+
+    async def load_attachment() -> RenderedArtifact:
+        nonlocal load_calls
+        load_calls += 1
+        return RenderedArtifact(
+            b"attached-image",
+            "image/png",
+            {"width": 320, "height": 180},
+        )
+
+    capture = InputArtifactCaptureTool()
+    harness = Myli(
+        main_model=model,
+        design_spec=DESIGN_SPEC,
+        tools=(capture,),
+    )
+    result = asyncio.run(
+        harness.run(
+            request="Use my attachment as the visual reference.",
+            design=CURRENT_DESIGN,
+            capabilities={"input.inspect"},
+            input_artifacts=(
+                InputArtifact(
+                    id="attachment-1",
+                    kind="attached_image",
+                    description="Latest user attachment 1.",
+                    metadata={"attachment_number": 1, "message_scope": "latest"},
+                    loader=load_attachment,
+                ),
+            ),
+        )
+    )
+
+    assert result.message == "I inspected the attachment."
+    assert load_calls == 1
+    assert [artifact.data for artifact in capture.loaded] == [
+        b"attached-image",
+        b"attached-image",
+    ]
+    assert capture.registered[0].run_id == result.run_id
+    prompt = model.requests[0].messages[-1].content
+    assert '"id":"attachment-1"' in prompt
+    assert '"kind":"attached_image"' in prompt
+    assert '"message_scope":"latest"' in prompt
 
 
 def test_agent_can_commit_a_render_and_return_null_final_patch() -> None:

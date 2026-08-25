@@ -9,7 +9,7 @@ import myli
 
 def test_version_is_exposed() -> None:
     """The package exposes its current release version."""
-    assert myli.__version__ == "0.1.3"
+    assert myli.__version__ == "0.2.0"
 
 
 def test_core_harness_is_exposed() -> None:
@@ -19,6 +19,9 @@ def test_core_harness_is_exposed() -> None:
     assert myli.FunctionAssetSearch.__name__ == "FunctionAssetSearch"
     assert myli.AssetSearchProvider.__name__ == "AssetSearchProvider"
     assert myli.AgentTool.__name__ == "AgentTool"
+    assert myli.InputArtifact.__name__ == "InputArtifact"
+    assert myli.VisualReviewImage.__name__ == "VisualReviewImage"
+    assert myli.VisualReviewRequest.__name__ == "VisualReviewRequest"
     assert not hasattr(myli, "ImageAsset")
     assert not hasattr(myli, "ImageSearchTool")
     assert not hasattr(myli, "FunctionImageSearch")

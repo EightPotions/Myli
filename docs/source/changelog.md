@@ -5,6 +5,11 @@ the public contracts evolve.
 
 ## Unreleased
 
+- Every main and internal vision request now produces a provider-neutral
+  `ModelCallTrace` with its purpose, model/provider identity, latency, outcome,
+  retry count, and reported input, output, cached, and reasoning tokens.
+  `RunResult` exposes the ordered calls and aggregate `RunUsage`; each
+  `StepTrace` includes the calls associated with that model step.
 - A synchronous `ModelContextPolicy` hook now runs before every main-model
   completion. `ModelContext` exposes run and step metadata, complete tool
   outcomes, and pinned message indexes. The safe default retains all messages;

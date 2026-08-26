@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import base64
 import json
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any, Literal
 
 from jsonschema import Draft202012Validator
@@ -31,6 +33,11 @@ from .errors import (
 
 CompletionFunction = Callable[..., Awaitable[Any]]
 OutputMode = Literal["structured", "json", "text"]
+
+_MODEL_METADATA_CAPTURE: ContextVar[dict[str, Any] | None] = ContextVar(
+    "myli_model_metadata_capture",
+    default=None,
+)
 
 _RESERVED_MAIN_KWARGS = {
     "api_base",
@@ -84,7 +91,11 @@ class _CompletionClient:
         if self._api_key is not None:
             call_kwargs["api_key"] = self._api_key
         try:
-            return await self._get_completion_function()(**call_kwargs)
+            response = await self._get_completion_function()(**call_kwargs)
+            capture = _MODEL_METADATA_CAPTURE.get()
+            if capture is not None:
+                capture.update(_metadata_from_backend(response))
+            return response
         except MyliError:
             raise
         except Exception as exc:
@@ -413,21 +424,7 @@ def _response_from_backend(response: Any) -> ModelResponse:
             raise ModelProtocolError(f"Model tool {name} arguments must contain valid JSON values.") from exc
         normalized_calls.append(ToolCall(id=call_id, name=name, arguments=arguments))
 
-    choice = _first_choice(response)
-    metadata: dict[str, Any] = {}
-    hidden = _plain_mapping(_value(response, "_hidden_params")) or {}
-    for key, value in (
-        ("provider_response_id", _value(response, "id")),
-        ("model", _value(response, "model")),
-        (
-            "provider",
-            _value(response, "provider") or hidden.get("custom_llm_provider"),
-        ),
-        ("finish_reason", _value(choice, "finish_reason")),
-        ("usage", _plain_mapping(_value(response, "usage"))),
-    ):
-        if value is not None:
-            metadata[key] = value
+    metadata = _metadata_from_backend(response)
     reasoning = None
     for field_name in (
         "reasoning_content",
@@ -448,6 +445,54 @@ def _response_from_backend(response: Any) -> ModelResponse:
 
 def _response_message(response: Any) -> Any:
     return _value(_first_choice(response), "message")
+
+
+@contextmanager
+def _capture_model_metadata() -> Iterator[dict[str, Any]]:
+    """Collect response metadata from a LiteLLM call in the current async task."""
+
+    captured: dict[str, Any] = {}
+    token = _MODEL_METADATA_CAPTURE.set(captured)
+    try:
+        yield captured
+    finally:
+        _MODEL_METADATA_CAPTURE.reset(token)
+
+
+def _metadata_from_backend(response: Any) -> dict[str, Any]:
+    metadata: dict[str, Any] = {}
+    hidden = _plain_mapping(_value(response, "_hidden_params")) or {}
+    try:
+        choice = _first_choice(response)
+    except ModelProtocolError:
+        choice = None
+    retry_count = next(
+        (
+            value
+            for value in (
+                _value(response, "retry_count"),
+                _value(response, "num_retries"),
+                hidden.get("retry_count"),
+                hidden.get("num_retries"),
+            )
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0
+        ),
+        None,
+    )
+    for key, value in (
+        ("provider_response_id", _value(response, "id")),
+        ("model", _value(response, "model")),
+        (
+            "provider",
+            _value(response, "provider") or hidden.get("custom_llm_provider"),
+        ),
+        ("finish_reason", _value(choice, "finish_reason")),
+        ("usage", _plain_mapping(_value(response, "usage"))),
+        ("retry_count", retry_count),
+    ):
+        if value is not None:
+            metadata[key] = value
+    return metadata
 
 
 def _first_choice(response: Any) -> Any:

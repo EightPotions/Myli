@@ -277,19 +277,16 @@ def test_vision_client_sends_an_in_memory_data_url() -> None:
         options={"max_tokens": 500},
         completion=completion,
     )
-    review = asyncio.run(
-        vision.review(
-            VisualReviewRequest(
-                images=(
-                    VisualReviewImage(
-                        RenderedArtifact(b"test-png", "image/png"),
-                        label="Rendered poster",
-                    ),
-                ),
-                prompt="Review this poster.",
-            )
-        )
+    request = VisualReviewRequest(
+        images=(
+            VisualReviewImage(
+                RenderedArtifact(b"test-png", "image/png"),
+                label="Rendered poster",
+            ),
+        ),
+        prompt="Review this poster.",
     )
+    review = asyncio.run(vision.review(request))
 
     call = calls[0]
     content = call["messages"][1]["content"]
@@ -304,6 +301,7 @@ def test_vision_client_sends_an_in_memory_data_url() -> None:
     assert call["api_key"] == "vision-secret"
     assert call["stream"] is False
     assert review == "Strong hierarchy. Increase contrast."
+    assert request.purpose == "comparison"
 
 
 def test_vision_client_sends_multiple_labeled_images_and_validates_schema() -> None:

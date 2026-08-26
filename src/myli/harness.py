@@ -24,6 +24,7 @@ from ._models import (
     DEFAULT_VISION_SYSTEM_PROMPT,
     LiteLLMMainModel,
     LiteLLMVisionModel,
+    _capture_model_metadata,
 )
 from .contracts import (
     AgentTool,
@@ -42,6 +43,8 @@ from .contracts import (
     InputArtifact,
     MainModel,
     Message,
+    ModelCallPurpose,
+    ModelCallTrace,
     ModelContext,
     ModelContextPolicy,
     ModelRequest,
@@ -50,6 +53,7 @@ from .contracts import (
     RenderedArtifact,
     RunEvent,
     RunResult,
+    RunUsage,
     StepHandler,
     StepTrace,
     TDesign,
@@ -216,6 +220,9 @@ class _RunState(Generic[TDesign]):
     evidence_retrievals: int = 0
     render_proposals: dict[str, _RenderProposal] = field(default_factory=dict)
     committed_render: _RenderProposal | None = None
+    model_calls: list[ModelCallTrace] = field(default_factory=list)
+    next_model_call_index: int = 0
+    vision_retry_pending: dict[ModelCallPurpose, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -485,6 +492,7 @@ class Myli(Generic[TDesign]):
         model_response_failures: list[str] = []
         validation_retries = 0
         validation_failures: list[str] = []
+        main_retry_count = 0
 
         for step in range(self.limits.max_model_steps):
             step_id = f"{run_id}:{step}"
@@ -499,6 +507,9 @@ class Myli(Generic[TDesign]):
                 ),
             )
             model_started = time.perf_counter()
+            model_call_index = self._reserve_model_call(state)
+            captured_metadata: dict[str, Any] = {}
+            response: ModelResponse | None = None
             try:
                 prepared_messages = self._prepare_model_messages(
                     messages,
@@ -507,21 +518,34 @@ class Myli(Generic[TDesign]):
                     step_id=step_id,
                     run_prompt_index=run_prompt_index,
                 )
-                response = await asyncio.wait_for(
-                    self.main_model.complete(
-                        ModelRequest(
-                            messages=prepared_messages,
-                            tools=self._tool_definitions_for(state),
-                            output_schema=copy.deepcopy(self._output_schema),
-                        )
-                    ),
-                    timeout=self.limits.model_timeout_seconds,
-                )
+                with _capture_model_metadata() as captured_metadata:
+                    response = await asyncio.wait_for(
+                        self.main_model.complete(
+                            ModelRequest(
+                                messages=prepared_messages,
+                                tools=self._tool_definitions_for(state),
+                                output_schema=copy.deepcopy(self._output_schema),
+                            )
+                        ),
+                        timeout=self.limits.model_timeout_seconds,
+                    )
                 if not isinstance(response, ModelResponse):
                     raise ModelProtocolError("MainModel.complete must return ModelResponse.")
                 self._validate_model_response(response)
             except asyncio.TimeoutError as exc:
                 elapsed = time.perf_counter() - model_started
+                self._record_model_call(
+                    state,
+                    index=model_call_index,
+                    step=step,
+                    step_id=step_id,
+                    purpose="main",
+                    client=self.main_model,
+                    metadata=captured_metadata,
+                    latency_seconds=elapsed,
+                    success=False,
+                    retry_count=main_retry_count,
+                )
                 await self._emit(
                     on_event,
                     RunEvent(
@@ -538,6 +562,23 @@ class Myli(Generic[TDesign]):
                 ) from exc
             except ModelProtocolError as exc:
                 model_response_failures.append(str(exc))
+                elapsed = time.perf_counter() - model_started
+                metadata = {
+                    **captured_metadata,
+                    **(dict(response.metadata) if isinstance(response, ModelResponse) else {}),
+                }
+                self._record_model_call(
+                    state,
+                    index=model_call_index,
+                    step=step,
+                    step_id=step_id,
+                    purpose="main",
+                    client=self.main_model,
+                    metadata=metadata,
+                    latency_seconds=elapsed,
+                    success=False,
+                    retry_count=main_retry_count,
+                )
                 await self._emit(
                     on_event,
                     RunEvent(
@@ -546,12 +587,13 @@ class Myli(Generic[TDesign]):
                         step_id=step_id,
                         step=step,
                         message="The main model returned an invalid response.",
-                        elapsed_seconds=time.perf_counter() - model_started,
+                        elapsed_seconds=elapsed,
                     ),
                 )
                 if model_response_retries >= self.limits.max_model_response_retries:
                     raise ModelProtocolError("The main model exhausted the model-response retry budget.") from exc
                 model_response_retries += 1
+                main_retry_count = 1
                 failure_history = "\n".join(
                     f"{index}. {_concise(failure)}" for index, failure in enumerate(model_response_failures, start=1)
                 )
@@ -569,6 +611,19 @@ class Myli(Generic[TDesign]):
                 )
                 continue
             except Exception as exc:
+                elapsed = time.perf_counter() - model_started
+                self._record_model_call(
+                    state,
+                    index=model_call_index,
+                    step=step,
+                    step_id=step_id,
+                    purpose="main",
+                    client=self.main_model,
+                    metadata=captured_metadata,
+                    latency_seconds=elapsed,
+                    success=False,
+                    retry_count=main_retry_count,
+                )
                 await self._emit(
                     on_event,
                     RunEvent(
@@ -577,7 +632,7 @@ class Myli(Generic[TDesign]):
                         step_id=step_id,
                         step=step,
                         message="The main model request failed.",
-                        elapsed_seconds=time.perf_counter() - model_started,
+                        elapsed_seconds=elapsed,
                     ),
                 )
                 if isinstance(exc, MyliError):
@@ -586,6 +641,18 @@ class Myli(Generic[TDesign]):
             model_response_retries = 0
             model_response_failures.clear()
             model_latency = time.perf_counter() - model_started
+            self._record_model_call(
+                state,
+                index=model_call_index,
+                step=step,
+                step_id=step_id,
+                purpose="main",
+                client=self.main_model,
+                metadata={**captured_metadata, **dict(response.metadata)},
+                latency_seconds=model_latency,
+                success=True,
+                retry_count=main_retry_count,
+            )
             await self._emit(
                 on_event,
                 RunEvent(
@@ -641,6 +708,7 @@ class Myli(Generic[TDesign]):
                         tool_outcomes=outcomes,
                         model_latency_seconds=model_latency,
                         tool_latency_seconds=tool_latency,
+                        model_calls=self._model_calls_for_step(state, step_id),
                     ),
                     on_step,
                 )
@@ -658,6 +726,7 @@ class Myli(Generic[TDesign]):
                     raise ToolExecutionError(
                         fatal.outcome.message or f"Tool {fatal.outcome.tool_name} failed."
                     ) from fatal.cause
+                main_retry_count = 0
                 continue
 
             await self._emit(
@@ -700,12 +769,14 @@ class Myli(Generic[TDesign]):
                         validation_failures=(str(exc),),
                         model_latency_seconds=model_latency,
                         tool_latency_seconds=0.0,
+                        model_calls=self._model_calls_for_step(state, step_id),
                     ),
                     on_step,
                 )
                 if validation_retries >= self.limits.max_validation_retries:
                     raise ModelProtocolError("The main model exhausted the validation retry budget.") from exc
                 validation_retries += 1
+                main_retry_count = 1
                 if response.content:
                     messages.append(Message(role="assistant", content=response.content))
                 failure_history = "\n".join(
@@ -758,6 +829,7 @@ class Myli(Generic[TDesign]):
                     response=response,
                     model_latency_seconds=model_latency,
                     tool_latency_seconds=0.0,
+                    model_calls=self._model_calls_for_step(state, step_id),
                 ),
                 on_step,
             )
@@ -771,6 +843,8 @@ class Myli(Generic[TDesign]):
                 traces=tuple(traces),
                 run_id=run_id,
                 model_metadata=copy.deepcopy(dict(response.metadata)),
+                model_calls=self._ordered_model_calls(state),
+                usage=RunUsage.from_model_calls(self._ordered_model_calls(state)),
             )
 
         raise RunLimitExceeded(f"The main model did not finish within {self.limits.max_model_steps} steps.")
@@ -1178,11 +1252,11 @@ class Myli(Generic[TDesign]):
         context: ToolContext,
     ) -> _CallExecution:
         if call.name == RENDER_TOOL_NAME and self.renderer is not None and self.vision_model is not None:
-            return await self._render_design(call, state, failure_mode)
+            return await self._render_design(call, state, failure_mode, context)
         if call.name == COMMIT_RENDER_TOOL_NAME and self.renderer is not None and self.vision_model is not None:
             return self._commit_render(call, state, failure_mode)
         if call.name == INSPECT_ASSET_TOOL_NAME and self._search_providers and self.vision_model is not None:
-            return await self._inspect_asset(call, state, failure_mode)
+            return await self._inspect_asset(call, state, failure_mode, context)
         if call.name == RETRIEVE_EVIDENCE_TOOL_NAME and any(
             config.model_view is not None for config in self._tools.values()
         ):
@@ -1469,6 +1543,7 @@ class Myli(Generic[TDesign]):
         call: ToolCall,
         state: _RunState[TDesign],
         failure_mode: FailureMode,
+        context: ToolContext,
     ) -> _CallExecution:
         argument_names = set(call.arguments)
         if "patch" not in argument_names or not argument_names.issubset({"base_render_ref", "patch", "questions"}):
@@ -1559,21 +1634,20 @@ class Myli(Generic[TDesign]):
                 timeout=self.limits.render_timeout_seconds,
             )
             self._validate_artifact(artifact)
-            review = await asyncio.wait_for(
-                self.vision_model.review(  # type: ignore[union-attr]
-                    VisualReviewRequest(
-                        images=(
-                            VisualReviewImage(
-                                artifact=artifact,
-                                label="Rendered design",
-                            ),
+            review = await self._review_with_trace(
+                VisualReviewRequest(
+                    images=(
+                        VisualReviewImage(
+                            artifact=artifact,
+                            label="Rendered design",
                         ),
-                        prompt=self._render_prompt(state, candidate, questions),
-                    )
+                    ),
+                    prompt=self._render_prompt(state, candidate, questions),
+                    purpose="render_review",
                 ),
-                timeout=self.limits.vision_timeout_seconds,
+                state=state,
+                context=context,
             )
-            review = _validated_vision_review(review)
         except asyncio.TimeoutError as exc:
             return self._call_error(
                 state,
@@ -1779,6 +1853,7 @@ class Myli(Generic[TDesign]):
         call: ToolCall,
         state: _RunState[TDesign],
         failure_mode: FailureMode,
+        context: ToolContext,
     ) -> _CallExecution:
         argument_names = set(call.arguments)
         if "asset_ref" not in argument_names or not argument_names.issubset({"asset_ref", "questions"}):
@@ -1870,21 +1945,20 @@ class Myli(Generic[TDesign]):
                 )
             state.preview_cache[reference] = artifact
         try:
-            review = await asyncio.wait_for(
-                self.vision_model.review(  # type: ignore[union-attr]
-                    VisualReviewRequest(
-                        images=(
-                            VisualReviewImage(
-                                artifact=artifact,
-                                label="Asset preview",
-                            ),
+            review = await self._review_with_trace(
+                VisualReviewRequest(
+                    images=(
+                        VisualReviewImage(
+                            artifact=artifact,
+                            label="Asset preview",
                         ),
-                        prompt=self._asset_prompt(asset, questions),
-                    )
+                    ),
+                    prompt=self._asset_prompt(asset, questions),
+                    purpose="asset_inspection",
                 ),
-                timeout=self.limits.vision_timeout_seconds,
+                state=state,
+                context=context,
             )
-            review = _validated_vision_review(review)
         except asyncio.TimeoutError as exc:
             return self._call_error(
                 state,
@@ -2434,6 +2508,146 @@ class Myli(Generic[TDesign]):
         if handler is not None:
             await handler(trace)
 
+    async def _review_with_trace(
+        self,
+        request: VisualReviewRequest,
+        *,
+        state: _RunState[TDesign],
+        context: ToolContext,
+    ) -> str | dict[str, Any]:
+        """Run one internal vision request and retain provider-neutral accounting."""
+
+        index = self._reserve_model_call(state)
+        started = time.perf_counter()
+        captured_metadata: dict[str, Any] = {}
+        retry_count = state.vision_retry_pending.get(request.purpose, 0)
+        try:
+            with _capture_model_metadata() as captured_metadata:
+                review = await asyncio.wait_for(
+                    self.vision_model.review(request),  # type: ignore[union-attr]
+                    timeout=self.limits.vision_timeout_seconds,
+                )
+            metadata = getattr(review, "metadata", None)
+            if isinstance(metadata, Mapping):
+                captured_metadata.update(metadata)
+            validated = _validated_vision_review(review)
+        except BaseException:
+            self._record_model_call(
+                state,
+                index=index,
+                step=context.model_step,
+                step_id=context.model_step_id or "",
+                purpose=request.purpose,
+                client=self.vision_model,
+                metadata=captured_metadata,
+                latency_seconds=time.perf_counter() - started,
+                success=False,
+                retry_count=retry_count,
+            )
+            state.vision_retry_pending[request.purpose] = 1
+            raise
+        self._record_model_call(
+            state,
+            index=index,
+            step=context.model_step,
+            step_id=context.model_step_id or "",
+            purpose=request.purpose,
+            client=self.vision_model,
+            metadata=captured_metadata,
+            latency_seconds=time.perf_counter() - started,
+            success=True,
+            retry_count=retry_count,
+        )
+        state.vision_retry_pending[request.purpose] = 0
+        return validated
+
+    @staticmethod
+    def _reserve_model_call(state: _RunState[Any]) -> int:
+        index = state.next_model_call_index
+        state.next_model_call_index += 1
+        return index
+
+    @staticmethod
+    def _record_model_call(
+        state: _RunState[Any],
+        *,
+        index: int,
+        step: int | None,
+        step_id: str,
+        purpose: ModelCallPurpose,
+        client: Any,
+        metadata: Mapping[str, Any],
+        latency_seconds: float,
+        success: bool,
+        retry_count: int,
+    ) -> None:
+        usage = metadata.get("usage")
+        usage = usage if isinstance(usage, Mapping) else {}
+        model = _optional_metadata_text(metadata.get("model")) or _optional_metadata_text(
+            getattr(client, "model", None)
+        )
+        provider = _optional_metadata_text(metadata.get("provider")) or _optional_metadata_text(
+            getattr(client, "provider", None)
+        )
+        if provider is None and model is not None and "/" in model:
+            provider = model.partition("/")[0] or None
+        reported_retries = _nonnegative_token_count(metadata.get("retry_count")) or 0
+        state.model_calls.append(
+            ModelCallTrace(
+                index=index,
+                run_id=state.run_id,
+                step_id=step_id,
+                step=step,
+                purpose=purpose,
+                model=model,
+                provider=provider,
+                latency_seconds=latency_seconds,
+                success=success,
+                retry_count=retry_count + reported_retries,
+                input_tokens=_usage_token_count(
+                    usage,
+                    "input_tokens",
+                    "prompt_tokens",
+                ),
+                output_tokens=_usage_token_count(
+                    usage,
+                    "output_tokens",
+                    "completion_tokens",
+                ),
+                cached_tokens=_usage_token_count(
+                    usage,
+                    "cached_tokens",
+                    "cache_read_input_tokens",
+                    "cached_content_token_count",
+                    nested=(
+                        ("input_tokens_details", "cached_tokens"),
+                        ("prompt_tokens_details", "cached_tokens"),
+                    ),
+                ),
+                reasoning_tokens=_usage_token_count(
+                    usage,
+                    "reasoning_tokens",
+                    "thoughts_token_count",
+                    nested=(
+                        ("output_tokens_details", "reasoning_tokens"),
+                        ("completion_tokens_details", "reasoning_tokens"),
+                    ),
+                ),
+            )
+        )
+
+    @staticmethod
+    def _ordered_model_calls(state: _RunState[Any]) -> tuple[ModelCallTrace, ...]:
+        return tuple(sorted(state.model_calls, key=lambda call: call.index if call.index is not None else -1))
+
+    @classmethod
+    def _model_calls_for_step(
+        cls,
+        state: _RunState[Any],
+        step_id: str,
+    ) -> tuple[ModelCallTrace, ...]:
+        return tuple(call for call in cls._ordered_model_calls(state) if call.step_id == step_id)
+
     def _validate_components(self) -> None:
         if not callable(getattr(self.main_model, "complete", None)):
             raise ConfigurationError("main_model must implement async complete().")
@@ -2755,6 +2969,37 @@ def _validated_vision_review(value: Any) -> str | dict[str, Any]:
     review = copy.deepcopy(dict(value))
     validate_json_value(review)
     return review
+
+
+def _optional_metadata_text(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    return value or None
+
+
+def _nonnegative_token_count(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
+def _usage_token_count(
+    usage: Mapping[str, Any],
+    *names: str,
+    nested: Sequence[tuple[str, str]] = (),
+) -> int | None:
+    for name in names:
+        count = _nonnegative_token_count(usage.get(name))
+        if count is not None:
+            return count
+    for container_name, name in nested:
+        container = usage.get(container_name)
+        if isinstance(container, Mapping):
+            count = _nonnegative_token_count(container.get(name))
+            if count is not None:
+                return count
+    return None
 
 
 def _optional_string(value: Any, *, name: str) -> str:

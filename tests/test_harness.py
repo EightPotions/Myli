@@ -18,6 +18,8 @@ from myli import (
     FailureMode,
     HarnessLimits,
     InputArtifact,
+    LiteLLMMainModel,
+    LiteLLMVisionModel,
     Message,
     ModelContext,
     ModelProtocolError,
@@ -358,6 +360,10 @@ def test_model_protocol_error_is_retried_with_a_correction_prompt() -> None:
         "model.failed",
         "model.started",
     ]
+    assert [call.success for call in result.model_calls] == [False, True]
+    assert [call.retry_count for call in result.model_calls] == [0, 1]
+    assert result.usage.request_count == 2
+    assert result.usage.failed_requests == 1
 
 
 def test_model_protocol_retry_budget_is_bounded() -> None:
@@ -465,6 +471,153 @@ def test_agent_can_render_review_and_return_a_validated_edit() -> None:
     assert all(event.step_id == result.traces[1].step_id for event in events[5:-1])
     assert all(event.safe_message == event.message for event in events)
     assert all(event.elapsed_seconds >= 0 for event in events)
+
+
+def test_run_accounts_for_main_and_vision_model_usage() -> None:
+    main_responses = iter(
+        [
+            {
+                "model": "openai/main-test",
+                "_hidden_params": {"custom_llm_provider": "openai"},
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 2,
+                    "prompt_tokens_details": {"cached_tokens": 3},
+                    "completion_tokens_details": {"reasoning_tokens": 1},
+                },
+                "choices": [
+                    {
+                        "message": {
+                            "tool_calls": [
+                                {
+                                    "id": "render-usage",
+                                    "function": {
+                                        "name": "render_design",
+                                        "arguments": '{"patch":[]}',
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ],
+            },
+            {
+                "model": "openai/main-test",
+                "_hidden_params": {"custom_llm_provider": "openai"},
+                "usage": {"input_tokens": 11, "output_tokens": 3},
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "message": "Review complete.",
+                                    "patch": None,
+                                }
+                            )
+                        }
+                    }
+                ],
+            },
+        ]
+    )
+
+    async def main_completion(**kwargs):
+        del kwargs
+        return next(main_responses)
+
+    async def vision_completion(**kwargs):
+        del kwargs
+        return {
+            "model": "anthropic/vision-test",
+            "_hidden_params": {"custom_llm_provider": "anthropic"},
+            "usage": {
+                "input_tokens": 20,
+                "output_tokens": 4,
+                "cache_read_input_tokens": 5,
+                "output_tokens_details": {"reasoning_tokens": 2},
+            },
+            "choices": [{"message": {"content": "The layout is balanced."}}],
+        }
+
+    harness = Myli(
+        main_model=LiteLLMMainModel(model="openai/main-test", completion=main_completion),
+        vision_model=LiteLLMVisionModel(model="anthropic/vision-test", completion=vision_completion),
+        design_spec=DESIGN_SPEC,
+        renderer=FakeRenderer(),
+    )
+
+    result = asyncio.run(harness.run(request="Review the current design.", design=CURRENT_DESIGN))
+
+    assert [call.purpose for call in result.model_calls] == [
+        "main",
+        "render_review",
+        "main",
+    ]
+    assert [call.model for call in result.model_calls] == [
+        "openai/main-test",
+        "anthropic/vision-test",
+        "openai/main-test",
+    ]
+    assert [call.provider for call in result.model_calls] == ["openai", "anthropic", "openai"]
+    assert all(call.success for call in result.model_calls)
+    assert all(call.latency_seconds >= 0 for call in result.model_calls)
+    assert result.model_calls[0].cached_tokens == 3
+    assert result.model_calls[0].reasoning_tokens == 1
+    assert result.model_calls[1].cached_tokens == 5
+    assert result.model_calls[1].reasoning_tokens == 2
+    assert result.traces[0].model_calls == result.model_calls[:2]
+    assert result.usage.input_tokens == 41
+    assert result.usage.output_tokens == 9
+    assert result.usage.cached_tokens == 8
+    assert result.usage.reasoning_tokens == 3
+    assert result.usage.request_count == 3
+    assert result.usage.successful_requests == 3
+    assert result.usage.failed_requests == 0
+    assert result.usage.latency_seconds == sum(call.latency_seconds for call in result.model_calls)
+
+
+def test_failed_vision_requests_are_traced_and_retries_are_counted() -> None:
+    class FailingOnceVisionAgent:
+        model = "provider/vision-test"
+        provider = "provider"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def review(self, request: VisualReviewRequest) -> str:
+            del request
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("temporary vision failure")
+            return "The second review succeeded."
+
+    render_calls = (
+        ToolCall(id="render-failed", name="render_design", arguments={"patch": []}),
+        ToolCall(id="render-retried", name="render_design", arguments={"patch": []}),
+    )
+    model = FakeMainAgent(
+        [
+            ModelResponse(tool_calls=(render_calls[0],)),
+            ModelResponse(tool_calls=(render_calls[1],)),
+            ModelResponse(content=json.dumps({"message": "Recovered.", "patch": None})),
+        ]
+    )
+    harness = Myli(
+        main_model=model,
+        vision_model=FailingOnceVisionAgent(),
+        design_spec=DESIGN_SPEC,
+        renderer=FakeRenderer(),
+    )
+
+    result = asyncio.run(harness.run(request="Retry the visual review.", design=CURRENT_DESIGN))
+
+    vision_calls = [call for call in result.model_calls if call.purpose == "render_review"]
+    assert [call.success for call in vision_calls] == [False, True]
+    assert [call.retry_count for call in vision_calls] == [0, 1]
+    assert all(call.model == "provider/vision-test" for call in vision_calls)
+    assert result.usage.request_count == 5
+    assert result.usage.failed_requests == 1
+    assert result.usage.retry_count == 1
 
 
 def test_structured_vision_review_remains_an_object_in_tool_results() -> None:
@@ -1589,6 +1742,12 @@ def test_multiple_asset_search_tools_and_preview_inspection_share_approved_asset
         "search_assets_stock",
         "search_assets_icons",
         "inspect_asset",
+    ]
+    assert [call.purpose for call in result.model_calls] == [
+        "main",
+        "main",
+        "asset_inspection",
+        "main",
     ]
 
 

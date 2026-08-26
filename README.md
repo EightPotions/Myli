@@ -182,8 +182,13 @@ WebSockets, or ignore them.
 
 StepTrace retains normalized model output, provider-exposed reasoning, tool
 calls and outcomes, validation failures, response ID, model, finish reason,
-usage, and latency. It provides to_dict() and redacted(). Async on_step and a
-configurable trace redactor make no persistence assumptions.
+usage, and latency. Each step also contains a ModelCallTrace for its main request
+and any nested vision requests. RunResult.model_calls provides the ordered calls
+for the complete run, including failed attempts, while RunResult.usage aggregates
+reported input, output, cached, and reasoning tokens, request outcomes, retries,
+and model latency. Request purposes distinguish main, render_review,
+asset_inspection, and comparison work. Traces provide to_dict() and redacted().
+Async on_step and a configurable trace redactor make no persistence assumptions.
 
 HarnessLimits bounds model steps, retries, renders, searches, search results,
 asset inspections, patches, documents, history, artifacts, operation timeouts,

@@ -28,6 +28,14 @@ available below myli.integrations.
 :members:
 ~~~
 
+~~~{autoclass} ModelCallTrace
+:members:
+~~~
+
+~~~{autoclass} RunUsage
+:members:
+~~~
+
 ~~~{autoclass} ToolOutcome
 :members:
 ~~~

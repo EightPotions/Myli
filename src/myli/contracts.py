@@ -22,6 +22,7 @@ TDesign = TypeVar("TDesign")
 TDesignContra = TypeVar("TDesignContra", contravariant=True)
 PreviewLoader = Callable[[], Awaitable["RenderedArtifact"]]
 InputArtifactLoader = Callable[[], Awaitable["RenderedArtifact"]]
+ModelCallPurpose = Literal["main", "render_review", "asset_inspection", "comparison"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +84,123 @@ class ModelResponse:
             "reasoning_content": None if redact else self.reasoning_content,
             "tool_calls": [call.to_dict(redact=redact) for call in self.tool_calls],
             "metadata": _safe_trace_value(self.metadata),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ModelCallTrace:
+    """Provider-neutral accounting for one main- or vision-model request."""
+
+    purpose: ModelCallPurpose
+    latency_seconds: float
+    success: bool
+    retry_count: int = 0
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cached_tokens: int | None = None
+    reasoning_tokens: int | None = None
+    model: str | None = None
+    provider: str | None = None
+    run_id: str = ""
+    step_id: str = ""
+    step: int | None = None
+    index: int | None = None
+
+    @property
+    def total_tokens(self) -> int | None:
+        """Input plus output tokens, when either count was reported."""
+
+        if self.input_tokens is None and self.output_tokens is None:
+            return None
+        return (self.input_tokens or 0) + (self.output_tokens or 0)
+
+    @property
+    def succeeded(self) -> bool:
+        return self.success
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "index": self.index,
+            "run_id": self.run_id,
+            "step_id": self.step_id,
+            "step": self.step,
+            "purpose": self.purpose,
+            "model": self.model,
+            "provider": self.provider,
+            "latency_seconds": self.latency_seconds,
+            "success": self.success,
+            "retry_count": self.retry_count,
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "cached_tokens": self.cached_tokens,
+            "reasoning_tokens": self.reasoning_tokens,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class RunUsage:
+    """Aggregate model usage and latency for a complete successful run."""
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cached_tokens: int = 0
+    reasoning_tokens: int = 0
+    request_count: int = 0
+    successful_requests: int = 0
+    failed_requests: int = 0
+    retry_count: int = 0
+    latency_seconds: float = 0.0
+
+    @classmethod
+    def from_model_calls(cls, calls: Sequence[ModelCallTrace]) -> RunUsage:
+        """Sum reported counters while treating unavailable token fields as zero."""
+
+        calls = tuple(calls)
+        return cls(
+            input_tokens=sum(call.input_tokens or 0 for call in calls),
+            output_tokens=sum(call.output_tokens or 0 for call in calls),
+            cached_tokens=sum(call.cached_tokens or 0 for call in calls),
+            reasoning_tokens=sum(call.reasoning_tokens or 0 for call in calls),
+            request_count=len(calls),
+            successful_requests=sum(call.success for call in calls),
+            failed_requests=sum(not call.success for call in calls),
+            retry_count=sum(call.retry_count for call in calls),
+            latency_seconds=sum(call.latency_seconds for call in calls),
+        )
+
+    @property
+    def total_tokens(self) -> int:
+        """Input plus output tokens; cached and reasoning are detail subsets."""
+
+        return self.input_tokens + self.output_tokens
+
+    @property
+    def model_calls(self) -> int:
+        return self.request_count
+
+    @property
+    def successful_calls(self) -> int:
+        return self.successful_requests
+
+    @property
+    def failed_calls(self) -> int:
+        return self.failed_requests
+
+    @property
+    def total_latency_seconds(self) -> float:
+        return self.latency_seconds
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "cached_tokens": self.cached_tokens,
+            "reasoning_tokens": self.reasoning_tokens,
+            "request_count": self.request_count,
+            "successful_requests": self.successful_requests,
+            "failed_requests": self.failed_requests,
+            "retry_count": self.retry_count,
+            "latency_seconds": self.latency_seconds,
         }
 
 
@@ -175,6 +293,7 @@ class VisualReviewRequest:
     system_prompt: str | None = None
     response_schema: Mapping[str, Any] | None = field(default=None, compare=False)
     response_schema_name: str = "visual_review"
+    purpose: ModelCallPurpose = "comparison"
 
     def __post_init__(self) -> None:
         images = tuple(self.images)
@@ -190,6 +309,8 @@ class VisualReviewRequest:
             raise ValueError("VisualReviewRequest.system_prompt cannot be empty.")
         if not isinstance(self.response_schema_name, str) or not self.response_schema_name.strip():
             raise ValueError("VisualReviewRequest.response_schema_name cannot be empty.")
+        if self.purpose not in {"main", "render_review", "asset_inspection", "comparison"}:
+            raise ValueError("VisualReviewRequest.purpose is invalid.")
 
         schema = self.response_schema
         if schema is not None:
@@ -654,10 +775,25 @@ class StepTrace:
     validation_failures: tuple[str, ...] = ()
     model_latency_seconds: float | None = None
     tool_latency_seconds: float | None = None
+    model_calls: tuple[ModelCallTrace, ...] = ()
 
     @property
     def model_response(self) -> ModelResponse:
         return self.response
+
+    @property
+    def model_call(self) -> ModelCallTrace | None:
+        """The main-model request associated with this step, when recorded."""
+
+        return next((call for call in self.model_calls if call.purpose == "main"), None)
+
+    @property
+    def model_call_trace(self) -> ModelCallTrace | None:
+        return self.model_call
+
+    @property
+    def vision_model_calls(self) -> tuple[ModelCallTrace, ...]:
+        return tuple(call for call in self.model_calls if call.purpose != "main")
 
     @property
     def assistant_content(self) -> str | None:
@@ -726,6 +862,7 @@ class StepTrace:
             "usage": _safe_trace_value(trace.usage),
             "model_latency_seconds": trace.model_latency_seconds,
             "tool_latency_seconds": trace.tool_latency_seconds,
+            "model_calls": [call.to_dict() for call in trace.model_calls],
         }
 
 
@@ -794,6 +931,8 @@ class RunResult(Generic[TDesign]):
     traces: tuple[StepTrace, ...]
     run_id: str
     model_metadata: Mapping[str, Any] = field(default_factory=dict)
+    model_calls: tuple[ModelCallTrace, ...] = ()
+    usage: RunUsage = field(default_factory=RunUsage)
 
     @property
     def candidate(self) -> TDesign | None:
@@ -810,6 +949,14 @@ class RunResult(Generic[TDesign]):
     @property
     def provider_metadata(self) -> Mapping[str, Any]:
         return self.model_metadata
+
+    @property
+    def model_call_traces(self) -> tuple[ModelCallTrace, ...]:
+        return self.model_calls
+
+    @property
+    def run_usage(self) -> RunUsage:
+        return self.usage
 
 
 def _canonical_json(value: Mapping[str, Any]) -> str:

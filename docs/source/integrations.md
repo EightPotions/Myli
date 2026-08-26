@@ -275,8 +275,13 @@ The `kind` field combines phase and status, such as
 
 Use async `on_step` to persist each completed model/tool iteration immediately.
 Step traces include assistant and provider-exposed reasoning content, tool calls
-and outcomes, provider metadata, token usage, model/tool latency, and validation
-errors. Configure `trace_redactor` on {py:class}`~myli.Myli` to synchronously or
+and outcomes, provider metadata, model/tool latency, validation errors, and the
+{py:class}`~myli.ModelCallTrace` values associated with the step. The complete
+ordered call sequence is available on {py:attr}`myli.RunResult.model_calls`, and
+{py:attr}`myli.RunResult.usage` aggregates reported input, output, cached, and
+reasoning tokens with request counts, retries, and latency. Model-call purposes
+identify main, render-review, asset-inspection, and comparison requests.
+Configure `trace_redactor` on {py:class}`~myli.Myli` to synchronously or
 asynchronously replace each trace before `on_step` and the final result receive
 it.
 

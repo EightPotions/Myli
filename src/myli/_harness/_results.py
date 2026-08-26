@@ -26,6 +26,7 @@ from ..errors import (
     ConfigurationError,
     DesignValidationError,
     JsonPatchError,
+    RunLimitExceeded,
 )
 from ..json_patch import JsonPatchLimits, apply_json_patch
 from ._helpers import (
@@ -86,6 +87,8 @@ class ResultMixin:
             self._check_document_size(candidate_document)
         except DesignValidationError:
             raise
+        except RunLimitExceeded:
+            raise
         except Exception as exc:
             raise DesignValidationError(f"The proposed design is invalid: {exc}") from exc
         changed = _canonical_json(candidate_document) != _canonical_json(state.current_document)
@@ -128,6 +131,8 @@ class ResultMixin:
             self._check_document_size(candidate_document)
         except DesignValidationError:
             raise
+        except RunLimitExceeded:
+            raise
         except Exception as exc:
             raise DesignValidationError(f"The committed design is invalid: {exc}") from exc
 
@@ -158,6 +163,12 @@ class ResultMixin:
         *,
         phase: Literal["render", "final"],
     ) -> None:
+        if self.limits.max_identical_candidates is not None:
+            self._record_candidate(
+                state,
+                self.design_spec.serialize(candidate),
+                phase=phase,
+            )
         context = CandidateContext(
             run_id=state.run_id,
             phase=phase,

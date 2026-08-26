@@ -21,6 +21,7 @@ from ..contracts import (
 )
 from ..errors import (
     DesignValidationError,
+    RunLimitExceeded,
 )
 from ._helpers import (
     _canonical_json,
@@ -113,7 +114,14 @@ class VisualToolsMixin:
             changed = _canonical_json(candidate_document) != _canonical_json(state.current_document)
             if changed and not state.can_edit:
                 raise DesignValidationError("Editing is disabled; a changed candidate cannot be rendered.")
+            self._record_render_progress(
+                state,
+                base_document=base_document,
+                candidate_document=candidate_document,
+            )
         except asyncio.CancelledError:
+            raise
+        except RunLimitExceeded:
             raise
         except Exception as exc:
             return self._call_error(
@@ -154,6 +162,8 @@ class VisualToolsMixin:
                 cause=exc,
             )
         except asyncio.CancelledError:
+            raise
+        except RunLimitExceeded:
             raise
         except Exception as exc:
             return self._call_error(
@@ -465,6 +475,8 @@ class VisualToolsMixin:
                 cause=exc,
             )
         except asyncio.CancelledError:
+            raise
+        except RunLimitExceeded:
             raise
         except Exception as exc:
             return self._call_error(

@@ -81,6 +81,7 @@ class ToolExecutionMixin:
                 await asyncio.gather(*tasks, return_exceptions=True)
                 raise
             for execution in executions:
+                self._record_tool_result(state, execution.outcome)
                 state.outcomes.append(execution.outcome)
                 await self._tool_finished(
                     execution.outcome,
@@ -96,6 +97,7 @@ class ToolExecutionMixin:
             await self._tool_started(call, state, step, step_id, on_event)
             execution = await self._invoke_tool(call, state, metadata)
             executions.append(execution)
+            self._record_tool_result(state, execution.outcome)
             state.outcomes.append(execution.outcome)
             total_latency += execution.outcome.latency_seconds or 0.0
             await self._tool_finished(

@@ -492,6 +492,7 @@ class Myli(
                 if state.call_ids.intersection(call.id for call in response.tool_calls):
                     raise ModelProtocolError("Tool call IDs must be unique across the complete run.")
                 state.call_ids.update(call.id for call in response.tool_calls)
+                self._record_tool_calls(state, response.tool_calls)
                 messages.append(
                     Message(
                         role="assistant",

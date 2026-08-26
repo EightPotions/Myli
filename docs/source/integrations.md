@@ -256,6 +256,11 @@ limits = HarnessLimits(
     max_vision_questions=6,
     max_vision_question_chars=1000,
     max_search_results=6,
+    max_total_provider_tokens=100_000,
+    max_total_tool_result_bytes=1_000_000,
+    max_repeated_tool_calls=2,
+    max_identical_candidates=2,
+    max_consecutive_noop_renders=1,
     model_timeout_seconds=90,
     render_timeout_seconds=20,
     vision_timeout_seconds=60,
@@ -265,7 +270,13 @@ limits = HarnessLimits(
 
 Timeouts are finite positive seconds and apply independently to each external
 operation. Patch, document, artifact, history, and optional total-run limits are
-available on the same object.
+available on the same object. The five generic controls shown above default to
+``None``. Tool-call identity uses the tool name and canonical strict-JSON
+arguments. Candidate identity uses canonical serialized documents within the
+render or final validation phase. A render is a no-op when its validated document
+is identical to the current document or to the ``base_render_ref`` candidate it
+revises. Crossing one of these run-wide limits raises
+{py:class}`~myli.RunLimitExceeded`.
 
 Pass an async `on_event` handler to {py:meth}`myli.Myli.run` for progress UI or
 telemetry. Deterministic model, tool, and validation events carry run and step

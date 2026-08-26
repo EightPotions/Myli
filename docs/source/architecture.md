@@ -101,7 +101,8 @@ from outcomes and persisted traces.
 ## Isolation and ownership
 
 The Myli instance stores immutable configuration only. Tool counters, search
-budgets, assets, outcomes, preview caches, traces, and identifiers are created
+budgets, aggregate provider and tool-result usage, canonical repetition
+signatures, assets, outcomes, preview caches, traces, and identifiers are created
 inside each run. Cancellation propagates through awaited work and is never
 wrapped. The application remains solely responsible for accepting, applying,
 and persisting a returned candidate.

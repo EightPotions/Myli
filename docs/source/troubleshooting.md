@@ -68,10 +68,11 @@ search tool, not the provider's raw asset ID or URI. The matching
 
 ## A run reaches its step limit
 
-{py:class}`~myli.RunLimitExceeded` means the main model kept calling tools or
-otherwise did not produce a valid final response within `max_model_steps`. Review the
-step traces, tool descriptions, model connection settings, and provider
-tool-choice settings before increasing the limit.
+{py:class}`~myli.RunLimitExceeded` means the main model reached the step budget or
+crossed an optional run-wide provider-token, tool-result, or stagnation limit.
+The exception message identifies the exhausted control. Review the step traces,
+tool descriptions, model connection settings, and provider tool-choice settings
+before increasing it.
 
 ## Configuration fails at construction
 

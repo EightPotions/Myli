@@ -73,6 +73,11 @@ class HarnessLimits:
     max_history_messages: int | None = 100
     max_history_bytes: int | None = 262_144
     total_run_timeout_seconds: float | None = None
+    max_total_provider_tokens: int | None = None
+    max_total_tool_result_bytes: int | None = None
+    max_repeated_tool_calls: int | None = None
+    max_identical_candidates: int | None = None
+    max_consecutive_noop_renders: int | None = None
     max_pointer_depth: int = 64
     max_patch_value_bytes: int = 262_144
     max_artifact_bytes: int = 10_485_760
@@ -116,6 +121,16 @@ class HarnessLimits:
             value = getattr(self, name)
             if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 0):
                 raise ValueError(f"{name} must be a non-negative integer or None.")
+        for name in (
+            "max_total_provider_tokens",
+            "max_total_tool_result_bytes",
+            "max_repeated_tool_calls",
+            "max_identical_candidates",
+            "max_consecutive_noop_renders",
+        ):
+            value = getattr(self, name)
+            if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 1):
+                raise ValueError(f"{name} must be a positive integer or None.")
         for name in (
             "model_timeout_seconds",
             "render_timeout_seconds",
@@ -166,6 +181,11 @@ class _RunState(Generic[TDesign]):
     model_calls: list[ModelCallTrace] = field(default_factory=list)
     next_model_call_index: int = 0
     vision_retry_pending: dict[ModelCallPurpose, int] = field(default_factory=dict)
+    total_provider_tokens: int = 0
+    total_tool_result_bytes: int = 0
+    tool_call_counts: dict[tuple[str, str], int] = field(default_factory=dict)
+    candidate_counts: dict[tuple[str, str], int] = field(default_factory=dict)
+    consecutive_noop_renders: int = 0
 
 
 @dataclass(frozen=True, slots=True)

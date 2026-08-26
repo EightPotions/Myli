@@ -199,7 +199,12 @@ Async on_step and a configurable trace redactor make no persistence assumptions.
 
 HarnessLimits bounds model steps, retries, renders, searches, search results,
 asset inspections, patches, documents, history, artifacts, operation timeouts,
-and optionally the entire run. Every custom tool retains its own limits.
+and optionally the entire run. Optional run-wide controls can also cap reported
+provider tokens and successful tool-result bytes, repeated calls with the same
+canonical arguments, identical candidates within a validation phase, and
+consecutive render candidates that are unchanged from their render base. These
+generic budget or stagnation guards raise `RunLimitExceeded` when crossed. Every
+custom tool retains its own limits.
 
 ## Patch and concurrency safety
 

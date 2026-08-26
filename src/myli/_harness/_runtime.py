@@ -31,8 +31,10 @@ from ..contracts import (
 from ..errors import (
     ConfigurationError,
     ModelProtocolError,
+    RunLimitExceeded,
 )
 from ._helpers import (
+    _canonical_json,
     _nonnegative_token_count,
     _optional_metadata_text,
     _usage_token_count,
@@ -164,14 +166,16 @@ class RuntimeMixin:
         state.vision_retry_pending[request.purpose] = 0
         return validated
 
-    @staticmethod
-    def _reserve_model_call(state: _RunState[Any]) -> int:
+    def _reserve_model_call(self, state: _RunState[Any]) -> int:
+        limit = self.limits.max_total_provider_tokens
+        if limit is not None and state.total_provider_tokens >= limit:
+            raise RunLimitExceeded(f"The total provider token budget of {limit} tokens is exhausted.")
         index = state.next_model_call_index
         state.next_model_call_index += 1
         return index
 
-    @staticmethod
     def _record_model_call(
+        self,
         state: _RunState[Any],
         *,
         index: int,
@@ -195,49 +199,121 @@ class RuntimeMixin:
         if provider is None and model is not None and "/" in model:
             provider = model.partition("/")[0] or None
         reported_retries = _nonnegative_token_count(metadata.get("retry_count")) or 0
-        state.model_calls.append(
-            ModelCallTrace(
-                index=index,
-                run_id=state.run_id,
-                step_id=step_id,
-                step=step,
-                purpose=purpose,
-                model=model,
-                provider=provider,
-                latency_seconds=latency_seconds,
-                success=success,
-                retry_count=retry_count + reported_retries,
-                input_tokens=_usage_token_count(
-                    usage,
-                    "input_tokens",
-                    "prompt_tokens",
+        trace = ModelCallTrace(
+            index=index,
+            run_id=state.run_id,
+            step_id=step_id,
+            step=step,
+            purpose=purpose,
+            model=model,
+            provider=provider,
+            latency_seconds=latency_seconds,
+            success=success,
+            retry_count=retry_count + reported_retries,
+            input_tokens=_usage_token_count(
+                usage,
+                "input_tokens",
+                "prompt_tokens",
+            ),
+            output_tokens=_usage_token_count(
+                usage,
+                "output_tokens",
+                "completion_tokens",
+            ),
+            cached_tokens=_usage_token_count(
+                usage,
+                "cached_tokens",
+                "cache_read_input_tokens",
+                "cached_content_token_count",
+                nested=(
+                    ("input_tokens_details", "cached_tokens"),
+                    ("prompt_tokens_details", "cached_tokens"),
                 ),
-                output_tokens=_usage_token_count(
-                    usage,
-                    "output_tokens",
-                    "completion_tokens",
+            ),
+            reasoning_tokens=_usage_token_count(
+                usage,
+                "reasoning_tokens",
+                "thoughts_token_count",
+                nested=(
+                    ("output_tokens_details", "reasoning_tokens"),
+                    ("completion_tokens_details", "reasoning_tokens"),
                 ),
-                cached_tokens=_usage_token_count(
-                    usage,
-                    "cached_tokens",
-                    "cache_read_input_tokens",
-                    "cached_content_token_count",
-                    nested=(
-                        ("input_tokens_details", "cached_tokens"),
-                        ("prompt_tokens_details", "cached_tokens"),
-                    ),
-                ),
-                reasoning_tokens=_usage_token_count(
-                    usage,
-                    "reasoning_tokens",
-                    "thoughts_token_count",
-                    nested=(
-                        ("output_tokens_details", "reasoning_tokens"),
-                        ("completion_tokens_details", "reasoning_tokens"),
-                    ),
-                ),
-            )
+            ),
         )
+        state.model_calls.append(trace)
+        reported_total = trace.total_tokens
+        if reported_total is None:
+            reported_total = _usage_token_count(usage, "total_tokens")
+        state.total_provider_tokens += reported_total or 0
+        limit = self.limits.max_total_provider_tokens
+        if limit is not None and state.total_provider_tokens > limit:
+            raise RunLimitExceeded(f"The run exceeded the total provider token budget of {limit} tokens.")
+
+    def _record_tool_calls(
+        self,
+        state: _RunState[Any],
+        calls: Sequence[ToolCall],
+    ) -> None:
+        limit = self.limits.max_repeated_tool_calls
+        if limit is None:
+            return
+        for call in calls:
+            try:
+                arguments = _canonical_json(dict(call.arguments))
+            except (TypeError, ValueError):
+                # Invalid JSON arguments are rejected by ordinary tool dispatch.
+                continue
+            signature = (call.name, arguments)
+            count = state.tool_call_counts.get(signature, 0) + 1
+            state.tool_call_counts[signature] = count
+            if count > limit:
+                raise RunLimitExceeded(
+                    f"The repeated tool call limit of {limit} identical calls was exceeded for {call.name}."
+                )
+
+    def _record_tool_result(self, state: _RunState[Any], outcome: ToolOutcome) -> None:
+        limit = self.limits.max_total_tool_result_bytes
+        if limit is None:
+            return
+        if not outcome.succeeded or outcome.result_size_bytes is None:
+            return
+        total = state.total_tool_result_bytes + outcome.result_size_bytes
+        if total > limit:
+            raise RunLimitExceeded(f"The run exceeded the total tool result budget of {limit} bytes.")
+        state.total_tool_result_bytes = total
+
+    def _record_candidate(
+        self,
+        state: _RunState[Any],
+        document: Mapping[str, Any],
+        *,
+        phase: str,
+    ) -> None:
+        limit = self.limits.max_identical_candidates
+        if limit is None:
+            return
+        signature = (phase, _canonical_json(document))
+        count = state.candidate_counts.get(signature, 0) + 1
+        state.candidate_counts[signature] = count
+        if count > limit:
+            raise RunLimitExceeded(f"The identical candidate limit of {limit} was exceeded during {phase}.")
+
+    def _record_render_progress(
+        self,
+        state: _RunState[Any],
+        *,
+        base_document: Mapping[str, Any],
+        candidate_document: Mapping[str, Any],
+    ) -> None:
+        limit = self.limits.max_consecutive_noop_renders
+        if limit is None:
+            return
+        if _canonical_json(candidate_document) == _canonical_json(base_document):
+            state.consecutive_noop_renders += 1
+        else:
+            state.consecutive_noop_renders = 0
+        if state.consecutive_noop_renders > limit:
+            raise RunLimitExceeded(f"The consecutive no-op render limit of {limit} was exceeded.")
 
     @staticmethod
     def _ordered_model_calls(state: _RunState[Any]) -> tuple[ModelCallTrace, ...]:

@@ -5,6 +5,10 @@ the public contracts evolve.
 
 ## Unreleased
 
+- `HarnessLimits` now offers optional aggregate provider-token and tool-result
+  budgets plus generic guards for repeated canonical tool calls, identical
+  candidates, and consecutive no-op renders. Crossing these controls stops the
+  run with `RunLimitExceeded`.
 - `DesignSpec.prompt_schema` can now explicitly provide a compact, model-facing
   schema while `DesignSpec.schema` remains the full authoritative runtime schema.
   Both schemas are checked independently; Myli does not attempt to prove their

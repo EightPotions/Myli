@@ -95,6 +95,8 @@ Provider integrations preserve tool-role boundaries when translating messages.
   their call, timeout, and result-size limits narrow. Tool arguments are checked
   against each tool's JSON input schema before application code runs.
 - Validate media size and decode limits in the renderer and model service.
-- Set {py:class}`~myli.HarnessLimits` according to latency and cost budgets.
+- Set {py:class}`~myli.HarnessLimits` according to latency and cost budgets. For
+  open-ended tool loops, consider the optional provider-token, aggregate
+  tool-result, repeated-call, identical-candidate, and no-op-render controls.
 - Log final acceptance and persistence in the host application, separately from
   Myli's in-memory traces.

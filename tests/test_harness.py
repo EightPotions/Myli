@@ -27,6 +27,7 @@ from myli import (
     ModelResponse,
     Myli,
     RenderedArtifact,
+    RunLimitExceeded,
     ToolCall,
     ToolContext,
     ToolExecutionError,
@@ -321,6 +322,201 @@ def test_asset_inspection_limit_is_configurable() -> None:
     assert HarnessLimits().max_asset_inspections == 6
     assert HarnessLimits(max_asset_inspections=2).max_asset_inspections == 2
     assert HarnessLimits(max_vision_questions=3).max_vision_questions == 3
+
+
+def test_generic_stagnation_and_budget_limits_are_optional_positive_integers() -> None:
+    limits = HarnessLimits()
+    names = (
+        "max_total_provider_tokens",
+        "max_total_tool_result_bytes",
+        "max_repeated_tool_calls",
+        "max_identical_candidates",
+        "max_consecutive_noop_renders",
+    )
+
+    assert all(getattr(limits, name) is None for name in names)
+    for name in names:
+        with unittest.TestCase().subTest(name=name):
+            with unittest.TestCase().assertRaisesRegex(ValueError, "positive integer or None"):
+                HarnessLimits(**{name: 0})
+
+
+def test_total_provider_token_budget_stops_the_run() -> None:
+    model = FakeMainAgent(
+        [
+            ModelResponse(
+                tool_calls=(ToolCall(id="unknown-1", name="unknown", arguments={}),),
+                metadata={"usage": {"input_tokens": 3, "output_tokens": 2}},
+            ),
+            ModelResponse(
+                content=json.dumps({"message": "Done.", "patch": None}),
+                metadata={"usage": {"input_tokens": 4, "output_tokens": 2}},
+            ),
+        ]
+    )
+    harness = Myli(
+        main_model=model,
+        design_spec=DESIGN_SPEC,
+        limits=HarnessLimits(max_total_provider_tokens=10),
+    )
+
+    with unittest.TestCase().assertRaisesRegex(RunLimitExceeded, "provider token budget"):
+        asyncio.run(harness.run(request="Keep trying.", design=CURRENT_DESIGN))
+
+    assert len(model.requests) == 2
+
+
+def test_total_tool_result_budget_accumulates_across_tools() -> None:
+    tool = FakeAgentTool(
+        required_capabilities=frozenset(),
+        max_calls_per_run=2,
+        result="1234",
+    )
+    model = FakeMainAgent(
+        [
+            ModelResponse(
+                tool_calls=(
+                    ToolCall(id="lookup-1", name="lookup_brand", arguments={"key": "primary"}),
+                    ToolCall(id="lookup-2", name="lookup_brand", arguments={"key": "secondary"}),
+                )
+            )
+        ]
+    )
+    harness = Myli(
+        main_model=model,
+        design_spec=DESIGN_SPEC,
+        tools=[tool],
+        limits=HarnessLimits(max_total_tool_result_bytes=10),
+    )
+
+    with unittest.TestCase().assertRaisesRegex(RunLimitExceeded, "tool result budget"):
+        asyncio.run(harness.run(request="Look up both colors.", design=CURRENT_DESIGN))
+
+    assert tool.calls == [{"key": "primary"}, {"key": "secondary"}]
+
+
+def test_repeated_tool_calls_use_canonical_arguments() -> None:
+    class ScopedAgentTool(FakeAgentTool):
+        def __init__(self) -> None:
+            super().__init__(required_capabilities=frozenset(), max_calls_per_run=2)
+            self.input_schema = {
+                "type": "object",
+                "properties": {
+                    "key": {"type": "string"},
+                    "scope": {"type": "string"},
+                },
+                "required": ["key", "scope"],
+                "additionalProperties": False,
+            }
+
+    tool = ScopedAgentTool()
+    model = FakeMainAgent(
+        [
+            ModelResponse(
+                tool_calls=(
+                    ToolCall(
+                        id="lookup-1",
+                        name="lookup_brand",
+                        arguments={"key": "primary", "scope": "global"},
+                    ),
+                )
+            ),
+            ModelResponse(
+                tool_calls=(
+                    ToolCall(
+                        id="lookup-2",
+                        name="lookup_brand",
+                        arguments={"scope": "global", "key": "primary"},
+                    ),
+                )
+            ),
+        ]
+    )
+    harness = Myli(
+        main_model=model,
+        design_spec=DESIGN_SPEC,
+        tools=[tool],
+        limits=HarnessLimits(max_repeated_tool_calls=1),
+    )
+
+    with unittest.TestCase().assertRaisesRegex(RunLimitExceeded, "repeated tool call limit"):
+        asyncio.run(harness.run(request="Repeat the lookup.", design=CURRENT_DESIGN))
+
+    assert tool.calls == [{"key": "primary", "scope": "global"}]
+
+
+def test_identical_render_candidates_stop_before_rendering_again() -> None:
+    first_patch = [{"op": "replace", "path": "/background", "value": "#000000"}]
+    equivalent_patch = [
+        {"op": "test", "path": "/background", "value": "#ffffff"},
+        *first_patch,
+    ]
+    model = FakeMainAgent(
+        [
+            ModelResponse(
+                tool_calls=(ToolCall(id="render-1", name="render_design", arguments={"patch": first_patch}),)
+            ),
+            ModelResponse(
+                tool_calls=(ToolCall(id="render-2", name="render_design", arguments={"patch": equivalent_patch}),)
+            ),
+        ]
+    )
+    renderer = FakeRenderer()
+    harness = Myli(
+        main_model=model,
+        vision_model=FakeVisionAgent(),
+        design_spec=DESIGN_SPEC,
+        renderer=renderer,
+        limits=HarnessLimits(max_identical_candidates=1),
+    )
+
+    with unittest.TestCase().assertRaisesRegex(RunLimitExceeded, "identical candidate limit"):
+        asyncio.run(
+            harness.run(
+                request="Render the same candidate twice.",
+                design=CURRENT_DESIGN,
+                can_edit=True,
+            )
+        )
+
+    assert renderer.designs == [{"background": "#000000", "elements": []}]
+
+
+def test_consecutive_noop_render_limit_resets_after_progress() -> None:
+    render_calls = (
+        ToolCall(id="noop-1", name="render_design", arguments={"patch": []}),
+        ToolCall(
+            id="changed",
+            name="render_design",
+            arguments={"patch": [{"op": "replace", "path": "/background", "value": "#000000"}]},
+        ),
+        ToolCall(id="noop-2", name="render_design", arguments={"patch": []}),
+        ToolCall(id="noop-3", name="render_design", arguments={"patch": []}),
+    )
+    model = FakeMainAgent([ModelResponse(tool_calls=(call,)) for call in render_calls])
+    renderer = FakeRenderer()
+    harness = Myli(
+        main_model=model,
+        vision_model=FakeVisionAgent(),
+        design_spec=DESIGN_SPEC,
+        renderer=renderer,
+        limits=HarnessLimits(max_renders=4, max_consecutive_noop_renders=1),
+    )
+
+    with unittest.TestCase().assertRaisesRegex(RunLimitExceeded, "no-op render limit"):
+        asyncio.run(
+            harness.run(
+                request="Stop if rendering stops making progress.",
+                design=CURRENT_DESIGN,
+                can_edit=True,
+            )
+        )
+
+    assert renderer.designs == [
+        CURRENT_DESIGN,
+        {"background": "#000000", "elements": []},
+        CURRENT_DESIGN,
+    ]
 
 
 def test_model_protocol_error_is_retried_with_a_correction_prompt() -> None:
@@ -818,6 +1014,7 @@ def test_agent_can_commit_a_render_and_return_null_final_patch() -> None:
         design_spec=DESIGN_SPEC,
         renderer=renderer,
         candidate_policies=[capture_policy_context],
+        limits=HarnessLimits(max_identical_candidates=1),
     )
 
     result = asyncio.run(
@@ -2080,8 +2277,7 @@ def test_prompt_schema_is_model_only_while_full_schema_remains_authoritative() -
     assert run_prompt is not None
     schema_line = next(line for line in run_prompt.splitlines() if line.startswith("Design schema JSON: "))
     assert schema_line == (
-        "Design schema JSON: "
-        f"{json.dumps(compact_model_schema, separators=(',', ':'), sort_keys=True)}"
+        f"Design schema JSON: {json.dumps(compact_model_schema, separators=(',', ':'), sort_keys=True)}"
     )
 
 

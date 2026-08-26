@@ -66,9 +66,11 @@ validated before the configured vision model receives it. The model's textual or
 structured JSON review is a normal tool result; raw artifact bytes are excluded
 from traces. A
 successful render receives a run-scoped reference and can later be committed as
-the run proposal without rendering again. The selection remains isolated run
-state and is revalidated with final-phase policy evidence; Myli never applies or
-persists it.
+the run proposal without rendering again. A subsequent render may use a successful
+reference as its base; its patch is applied to that candidate and the resulting
+patch chain is composed relative to the original document. The selection remains
+isolated run state and is revalidated with final-phase policy evidence; Myli never
+applies or persists it.
 
 Application tools can access successful run-scoped render artifacts through
 ``ToolContext.rendered_artifacts``. The mapping is transient and keyed by the same

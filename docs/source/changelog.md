@@ -5,6 +5,10 @@ the public contracts evolve.
 
 ## Unreleased
 
+- `render_design` accepts `base_render_ref` for incremental revisions of a
+  successful rendered candidate. Patch chains are composed so `commit_render`
+  still returns a proposal relative to the original document.
+
 ## 0.2.0
 
 - `VisualReviewRequest` and `VisualReviewImage` now carry labeled one- or

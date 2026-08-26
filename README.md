@@ -144,10 +144,12 @@ candidate and application policies before rendering, validates the artifact,
 and returns visual feedback as a tool result. The main model can attach a bounded
 `questions` array to ask one or more open, image-grounded questions about a
 rendered design or inspected asset preview. A successful render returns a
-run-scoped `render_ref`; `commit_render` selects it as the run's proposal without
-rendering again or persisting it. The final response should then use
-`patch: null`; an equivalent patch is accepted, while a conflicting patch enters
-normal validation retry.
+run-scoped `render_ref`. A later `render_design` call can pass that reference as
+`base_render_ref` to apply its patch to the rendered candidate; Myli composes the
+chain into a patch relative to the original document. `commit_render` selects a
+render as the run's proposal without rendering again or persisting it. The final
+response should then use `patch: null`; an equivalent patch is accepted, while a
+conflicting patch enters normal validation retry.
 Final policies run again with all completed tool outcomes before the committed
 proposal is returned. Uncommitted renders remain previews and do not affect the
 returned proposal fields. Committing requires editing to be enabled. A changed

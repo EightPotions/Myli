@@ -676,6 +676,183 @@ def test_agent_can_commit_a_render_and_return_null_final_patch() -> None:
     ]
 
 
+def test_agent_can_increment_a_render_and_commit_the_composed_patch() -> None:
+    first_patch = [
+        {
+            "op": "add",
+            "path": "/elements/-",
+            "value": {"kind": "text", "text": "Draft"},
+        }
+    ]
+    revision_patch = [
+        {
+            "op": "replace",
+            "path": "/elements/0/text",
+            "value": "Final",
+        }
+    ]
+
+    def revise_latest_render(request: ModelRequest) -> ModelResponse:
+        return ModelResponse(
+            tool_calls=(
+                ToolCall(
+                    id="render-revision",
+                    name="render_design",
+                    arguments={
+                        "base_render_ref": latest_render_ref(request),
+                        "patch": revision_patch,
+                    },
+                ),
+            )
+        )
+
+    model = FakeMainAgent(
+        [
+            ModelResponse(
+                tool_calls=(
+                    ToolCall(
+                        id="render-draft",
+                        name="render_design",
+                        arguments={"patch": first_patch},
+                    ),
+                )
+            ),
+            revise_latest_render,
+            commit_latest_render,
+            ModelResponse(content=json.dumps({"message": "I selected the revision.", "patch": None})),
+        ]
+    )
+    renderer = FakeRenderer()
+    harness = Myli(
+        main_model=model,
+        vision_model=FakeVisionAgent(),
+        design_spec=DESIGN_SPEC,
+        renderer=renderer,
+    )
+
+    result = asyncio.run(
+        harness.run(
+            request="Draft a title, revise it, and use the revision.",
+            design=CURRENT_DESIGN,
+            can_edit=True,
+        )
+    )
+
+    assert renderer.designs == [
+        {
+            "background": "#ffffff",
+            "elements": [{"kind": "text", "text": "Draft"}],
+        },
+        {
+            "background": "#ffffff",
+            "elements": [{"kind": "text", "text": "Final"}],
+        },
+    ]
+    assert result.design == renderer.designs[-1]
+    assert result.patch == tuple(first_patch + revision_patch)
+    assert apply_json_patch(CURRENT_DESIGN, list(result.patch)) == result.design
+    render_schema = model.requests[0].tools[0].input_schema
+    assert render_schema["properties"]["base_render_ref"] == {
+        "type": "string",
+        "minLength": 1,
+    }
+
+
+def test_incremental_render_rejects_an_unknown_base_without_rendering() -> None:
+    model = FakeMainAgent(
+        [
+            ModelResponse(
+                tool_calls=(
+                    ToolCall(
+                        id="render-revision",
+                        name="render_design",
+                        arguments={
+                            "base_render_ref": "render:missing",
+                            "patch": [],
+                        },
+                    ),
+                )
+            ),
+            ModelResponse(content=json.dumps({"message": "The base was unavailable.", "patch": None})),
+        ]
+    )
+    renderer = FakeRenderer()
+    harness = Myli(
+        main_model=model,
+        vision_model=FakeVisionAgent(),
+        design_spec=DESIGN_SPEC,
+        renderer=renderer,
+    )
+
+    result = asyncio.run(harness.run(request="Revise that render.", design=CURRENT_DESIGN))
+
+    assert renderer.designs == []
+    outcome = result.tool_outcomes[0]
+    assert outcome.status == "rejected"
+    assert "does not identify a successful render" in (outcome.message or "")
+
+
+def test_incremental_render_enforces_limits_on_the_composed_patch() -> None:
+    first_patch = [{"op": "replace", "path": "/background", "value": "#f5efe6"}]
+
+    def revise_latest_render(request: ModelRequest) -> ModelResponse:
+        return ModelResponse(
+            tool_calls=(
+                ToolCall(
+                    id="render-revision",
+                    name="render_design",
+                    arguments={
+                        "base_render_ref": latest_render_ref(request),
+                        "patch": [
+                            {
+                                "op": "add",
+                                "path": "/elements/-",
+                                "value": {"kind": "text", "text": "Title"},
+                            }
+                        ],
+                    },
+                ),
+            )
+        )
+
+    model = FakeMainAgent(
+        [
+            ModelResponse(
+                tool_calls=(
+                    ToolCall(
+                        id="render-draft",
+                        name="render_design",
+                        arguments={"patch": first_patch},
+                    ),
+                )
+            ),
+            revise_latest_render,
+            ModelResponse(content=json.dumps({"message": "The revision was too large.", "patch": None})),
+        ]
+    )
+    renderer = FakeRenderer()
+    harness = Myli(
+        main_model=model,
+        vision_model=FakeVisionAgent(),
+        design_spec=DESIGN_SPEC,
+        renderer=renderer,
+        limits=HarnessLimits(max_patch_operations=1),
+    )
+
+    result = asyncio.run(
+        harness.run(
+            request="Revise the first render.",
+            design=CURRENT_DESIGN,
+            can_edit=True,
+        )
+    )
+
+    assert renderer.designs == [{"background": "#f5efe6", "elements": []}]
+    outcome = result.tool_outcomes[1]
+    assert outcome.status == "rejected"
+    assert "exceeds the 1-operation limit" in (outcome.message or "")
+
+
 def test_matching_final_patch_keeps_the_committed_render_patch() -> None:
     committed_patch = [{"op": "replace", "path": "/background", "value": "#f5efe6"}]
     model = FakeMainAgent(
@@ -1434,7 +1611,7 @@ def test_patch_schemas_do_not_embed_the_complete_design_schema() -> None:
     )
 
     render_schema = harness._tool_definitions[0].input_schema
-    assert set(render_schema["properties"]) == {"patch", "questions"}
+    assert set(render_schema["properties"]) == {"base_render_ref", "patch", "questions"}
     assert render_schema["properties"]["questions"]["maxItems"] == 8
     assert "$defs" not in render_schema
     commit_schema = harness._tool_definitions[1].input_schema

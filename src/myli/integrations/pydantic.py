@@ -21,6 +21,7 @@ class PydanticDesignSpec(DesignSpec[TModel], Generic[TModel]):
         name: str,
         model_type: type[TModel],
         schema: Mapping[str, Any] | None = None,
+        prompt_schema: Mapping[str, Any] | None = None,
         input_migrator: InputMigrator | None = None,
         normalizer: Callable[[Any], TModel] | None = None,
     ) -> None:
@@ -47,6 +48,7 @@ class PydanticDesignSpec(DesignSpec[TModel], Generic[TModel]):
         super().__init__(
             name=name,
             schema=dict(schema) if schema is not None else model_json_schema(),
+            prompt_schema=prompt_schema,
             validator=validate,
             serializer=serialize,
             normalizer=normalizer or normalize,

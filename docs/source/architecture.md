@@ -22,7 +22,9 @@ request + trusted stored input
 DesignSpec separates trusted-input migration and normalization from strict
 untrusted-candidate validation. The latter always performs runtime JSON Schema
 validation and rejects a validator or serializer that silently changes model
-output.
+output. Applications may explicitly supply a smaller `prompt_schema` for model
+context, but validation always uses the complete `schema`; Myli validates each
+schema independently without trying to infer semantic equivalence.
 
 MainModel and VisionModel are public protocols. Applications can inject fakes,
 custom transports, or different providers. LiteLLM is the default integration

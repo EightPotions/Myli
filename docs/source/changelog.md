@@ -5,6 +5,10 @@ the public contracts evolve.
 
 ## Unreleased
 
+- `DesignSpec.prompt_schema` can now explicitly provide a compact, model-facing
+  schema while `DesignSpec.schema` remains the full authoritative runtime schema.
+  Both schemas are checked independently; Myli does not attempt to prove their
+  semantic equivalence.
 - Every main and internal vision request now produces a provider-neutral
   `ModelCallTrace` with its purpose, model/provider identity, latency, outcome,
   retry count, and reported input, output, cached, and reasoning tokens.

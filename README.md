@@ -72,6 +72,13 @@ schema and must serialize back without coercion, default insertion, field
 dropping, or any other silent rewrite. Stored input may opt into migration and
 normalization before each run.
 
+For large schemas, `DesignSpec(prompt_schema=...)` is an explicit opt-in to send
+a smaller schema in the run prompt. `schema` remains the complete authoritative
+schema for every stored input and model candidate. Myli validates that both are
+valid JSON Schemas, but deliberately does not try to prove that the prompt schema
+is semantically equivalent to the runtime schema; applications must maintain
+that relationship.
+
 MainModel and VisionModel are public protocols. Applications may inject
 different transports, endpoints, credentials, or fakes. LiteLLMMainModel and
 LiteLLMVisionModel are the default implementations and are included with Myli:

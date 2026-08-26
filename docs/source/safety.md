@@ -50,8 +50,15 @@ Every candidate crosses these layers:
 6. Enforce edit capability and compare a canonical serialized document.
 7. Return the patch and candidate without writing either one anywhere.
 
-`DesignSpec.schema` tells the model what document shape its patch must produce,
-while `DesignSpec.validator` is the trusted runtime check on the patched result.
+By default, `DesignSpec.schema` both tells the model what document shape its
+patch must produce and defines the JSON Schema used for runtime validation.
+Supplying `DesignSpec.prompt_schema` explicitly replaces only the schema included
+in the model prompt; the full `schema` remains authoritative for every runtime
+check. Myli checks that the prompt schema is itself valid but does not attempt to
+prove semantic equivalence between the two schemas. The application owns that
+relationship.
+
+`DesignSpec.validator` is the trusted runtime check on the patched result.
 Validators must reject invalid values instead of silently normalizing them; a
 normalizing candidate is rejected so the returned patch always reconstructs the
 returned design.

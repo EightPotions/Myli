@@ -472,7 +472,9 @@ class DesignSpec(Generic[TDesign]):
 
     Stored input is trusted and may be migrated or normalized. Model candidates
     are untrusted: their raw JSON is schema checked, passed through the validator,
-    and required to serialize back canonically without changing any value.
+    and required to serialize back canonically without changing any value. An
+    optional prompt schema may present a more compact schema to the model, but it
+    is never used for runtime validation.
     """
 
     name: str
@@ -481,6 +483,7 @@ class DesignSpec(Generic[TDesign]):
     serializer: DesignSerializer[TDesign]
     normalizer: DesignValidator[TDesign] | None = None
     input_migrator: InputMigrator | None = None
+    prompt_schema: Mapping[str, Any] | None = field(default=None, kw_only=True)
     _schema_validator: Draft202012Validator = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -499,8 +502,26 @@ class DesignSpec(Generic[TDesign]):
             Draft202012Validator.check_schema(schema)
         except SchemaError as exc:
             raise ValueError(f"DesignSpec.schema is invalid: {exc.message}") from exc
+
+        prompt_schema = self.prompt_schema
+        if prompt_schema is not None:
+            if not isinstance(prompt_schema, Mapping):
+                raise TypeError("DesignSpec.prompt_schema must be a mapping or None.")
+            try:
+                prompt_schema = copy.deepcopy(dict(prompt_schema))
+                Draft202012Validator.check_schema(prompt_schema)
+            except SchemaError as exc:
+                raise ValueError(f"DesignSpec.prompt_schema is invalid: {exc.message}") from exc
+
         object.__setattr__(self, "schema", schema)
+        object.__setattr__(self, "prompt_schema", prompt_schema)
         object.__setattr__(self, "_schema_validator", Draft202012Validator(schema))
+
+    @property
+    def effective_prompt_schema(self) -> Mapping[str, Any]:
+        """Return the explicitly supplied model schema, or the full schema."""
+
+        return self.schema if self.prompt_schema is None else self.prompt_schema
 
     def normalize_input(self, value: Any) -> TDesign:
         """Migrate and normalize a trusted stored input before a run."""

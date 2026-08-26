@@ -680,7 +680,7 @@ class Myli(
         )
 
     def _run_prompt(self, state: _RunState[TDesign]) -> str:
-        schema = _canonical_json(dict(self.design_spec.schema))
+        schema = _canonical_json(dict(self.design_spec.effective_prompt_schema))
         document = _canonical_json(state.current_document)
         input_artifacts = json.dumps(
             [

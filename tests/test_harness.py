@@ -2022,6 +2022,96 @@ def test_patch_schemas_do_not_embed_the_complete_design_schema() -> None:
     assert "$defs" not in harness._output_schema
 
 
+def test_prompt_schema_is_model_only_while_full_schema_remains_authoritative() -> None:
+    full_runtime_schema = {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string"},
+            "runtime_metadata": {
+                "type": "object",
+                "properties": {"revision": {"type": "integer"}},
+                "required": ["revision"],
+                "additionalProperties": False,
+            },
+        },
+        "required": ["title", "runtime_metadata"],
+        "additionalProperties": False,
+    }
+    compact_model_schema = {
+        "type": "object",
+        "properties": {"title": {"type": "string"}},
+        "required": ["title"],
+    }
+    spec = DesignSpec[dict[str, Any]](
+        name="document",
+        schema=full_runtime_schema,
+        prompt_schema=compact_model_schema,
+        validator=lambda value: value,
+        serializer=lambda value: value,
+    )
+    model = FakeMainAgent(
+        [
+            ModelResponse(
+                content=json.dumps(
+                    {
+                        "message": "Removed the model-omitted metadata.",
+                        "patch": [{"op": "remove", "path": "/runtime_metadata"}],
+                    }
+                )
+            )
+        ]
+    )
+    harness = Myli(
+        main_model=model,
+        design_spec=spec,
+        limits=HarnessLimits(max_validation_retries=0),
+    )
+
+    with unittest.TestCase().assertRaisesRegex(ModelProtocolError, "validation retry budget"):
+        asyncio.run(
+            harness.run(
+                request="Review the title.",
+                design={"title": "Draft", "runtime_metadata": {"revision": 3}},
+                can_edit=True,
+            )
+        )
+
+    run_prompt = model.requests[0].messages[-1].content
+    assert run_prompt is not None
+    schema_line = next(line for line in run_prompt.splitlines() if line.startswith("Design schema JSON: "))
+    assert schema_line == (
+        "Design schema JSON: "
+        f"{json.dumps(compact_model_schema, separators=(',', ':'), sort_keys=True)}"
+    )
+
+
+def test_prompt_schema_is_an_explicit_validated_opt_in() -> None:
+    spec = DesignSpec[dict[str, Any]](
+        name="document",
+        schema={"type": "object", "required": ["runtime_only"]},
+        prompt_schema={"type": "object", "required": ["model_only"]},
+        validator=lambda value: value,
+        serializer=lambda value: value,
+    )
+
+    assert spec.effective_prompt_schema == {"type": "object", "required": ["model_only"]}
+    assert DesignSpec(
+        name="default",
+        schema={"type": "object"},
+        validator=lambda value: value,
+        serializer=lambda value: value,
+    ).effective_prompt_schema == {"type": "object"}
+
+    with unittest.TestCase().assertRaisesRegex(ValueError, "DesignSpec.prompt_schema is invalid"):
+        DesignSpec(
+            name="invalid prompt schema",
+            schema={"type": "object"},
+            prompt_schema={"type": "not-a-json-schema-type"},
+            validator=lambda value: value,
+            serializer=lambda value: value,
+        )
+
+
 def test_invalid_patch_is_retried_without_mutating_the_current_design() -> None:
     model = FakeMainAgent(
         [

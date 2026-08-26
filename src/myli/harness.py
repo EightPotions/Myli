@@ -33,6 +33,7 @@ from .contracts import (
     CandidateContext,
     CandidatePolicy,
     CandidateValidator,
+    DefaultModelContextPolicy,
     Defer,
     DesignRenderer,
     DesignSpec,
@@ -41,6 +42,8 @@ from .contracts import (
     InputArtifact,
     MainModel,
     Message,
+    ModelContext,
+    ModelContextPolicy,
     ModelRequest,
     ModelResponse,
     Reject,
@@ -279,6 +282,7 @@ class Myli(Generic[TDesign]):
         vision_prompt: str = DEFAULT_VISION_SYSTEM_PROMPT,
         render_review_prompt: RenderPrompt[TDesign] | None = None,
         asset_review_prompt: AssetPrompt | None = None,
+        model_context_policy: ModelContextPolicy | None = None,
         trace_redactor: TraceRedactor | None = None,
         limits: HarnessLimits | None = None,
     ) -> None:
@@ -332,6 +336,9 @@ class Myli(Generic[TDesign]):
         self.main_prompt = _required_string(main_prompt, name="main_prompt")
         self.render_review_prompt = render_review_prompt
         self.asset_review_prompt = asset_review_prompt
+        self.model_context_policy = (
+            DefaultModelContextPolicy() if model_context_policy is None else model_context_policy
+        )
         self.trace_redactor = trace_redactor
         self.parallel_tool_calls = bool(parallel_tool_calls)
         self.middleware = tuple(middleware)
@@ -472,6 +479,7 @@ class Myli(Generic[TDesign]):
             *history,
             Message(role="user", content=self._run_prompt(state)),
         ]
+        run_prompt_index = len(messages) - 1
         traces: list[StepTrace] = []
         model_response_retries = 0
         model_response_failures: list[str] = []
@@ -492,10 +500,17 @@ class Myli(Generic[TDesign]):
             )
             model_started = time.perf_counter()
             try:
+                prepared_messages = self._prepare_model_messages(
+                    messages,
+                    state=state,
+                    step=step,
+                    step_id=step_id,
+                    run_prompt_index=run_prompt_index,
+                )
                 response = await asyncio.wait_for(
                     self.main_model.complete(
                         ModelRequest(
-                            messages=copy.deepcopy(tuple(messages)),
+                            messages=prepared_messages,
                             tools=self._tool_definitions_for(state),
                             output_schema=copy.deepcopy(self._output_schema),
                         )
@@ -2422,6 +2437,8 @@ class Myli(Generic[TDesign]):
     def _validate_components(self) -> None:
         if not callable(getattr(self.main_model, "complete", None)):
             raise ConfigurationError("main_model must implement async complete().")
+        if not callable(getattr(self.model_context_policy, "prepare", None)):
+            raise ConfigurationError("model_context_policy must implement prepare().")
         if self.vision_model is not None and not callable(getattr(self.vision_model, "review", None)):
             raise ConfigurationError("vision_model must implement async review().")
         if self.renderer is not None and not callable(getattr(self.renderer, "render", None)):
@@ -2434,6 +2451,109 @@ class Myli(Generic[TDesign]):
         for policy in self.candidate_policies:
             if not callable(policy) and not callable(getattr(policy, "validate", None)):
                 raise ConfigurationError("Candidate policies must be callable or implement validate().")
+
+    def _prepare_model_messages(
+        self,
+        messages: Sequence[Message],
+        *,
+        state: _RunState[TDesign],
+        step: int,
+        step_id: str,
+        run_prompt_index: int,
+    ) -> tuple[Message, ...]:
+        pinned_indexes = (0, run_prompt_index)
+        context = ModelContext(
+            run_id=state.run_id,
+            request=state.request,
+            step=step,
+            step_id=step_id,
+            can_edit=state.can_edit,
+            capabilities=state.capabilities,
+            tool_outcomes=copy.deepcopy(tuple(state.outcomes)),
+            pinned_message_indexes=pinned_indexes,
+        )
+        source = copy.deepcopy(tuple(messages))
+        try:
+            prepared = self.model_context_policy.prepare(source, context)
+        except Exception as exc:
+            raise ConfigurationError("model_context_policy.prepare() failed.") from exc
+        if inspect.isawaitable(prepared):
+            if inspect.iscoroutine(prepared):
+                prepared.close()
+            raise ConfigurationError("model_context_policy.prepare() must be synchronous.")
+        if isinstance(prepared, (str, bytes)) or not isinstance(prepared, Sequence):
+            raise ConfigurationError("model_context_policy.prepare() must return a sequence of Message values.")
+
+        prepared_messages = tuple(prepared)
+        self._validate_prepared_messages(
+            prepared_messages,
+            source=source,
+            pinned_indexes=pinned_indexes,
+        )
+        return copy.deepcopy(prepared_messages)
+
+    @classmethod
+    def _validate_prepared_messages(
+        cls,
+        messages: Sequence[Message],
+        *,
+        source: Sequence[Message],
+        pinned_indexes: Sequence[int],
+    ) -> None:
+        if any(not isinstance(message, Message) for message in messages):
+            raise ConfigurationError("model_context_policy.prepare() must return only Message values.")
+        if not messages:
+            raise ConfigurationError("model_context_policy.prepare() cannot return an empty message sequence.")
+        if messages[0] != source[pinned_indexes[0]]:
+            raise ConfigurationError("model_context_policy.prepare() must retain the system prompt first.")
+        for index in pinned_indexes[1:]:
+            if source[index] not in messages:
+                raise ConfigurationError("model_context_policy.prepare() removed a pinned message.")
+
+        pending_call_ids: set[str] = set()
+        seen_call_ids: set[str] = set()
+        for message in messages:
+            if message.content is not None and not isinstance(message.content, str):
+                raise ConfigurationError("Prepared message content must be text or None.")
+            if message.role not in {"system", "user", "assistant", "tool"}:
+                raise ConfigurationError("Prepared messages contain an unsupported role.")
+            if not isinstance(message.tool_calls, tuple):
+                raise ConfigurationError("Prepared message tool_calls must be a tuple.")
+
+            if pending_call_ids and message.role != "tool":
+                raise ConfigurationError("model_context_policy.prepare() separated a tool call from its result.")
+            if message.role == "tool":
+                if message.tool_calls:
+                    raise ConfigurationError("Prepared tool messages cannot request tool calls.")
+                call_id = message.tool_call_id
+                if not isinstance(call_id, str) or call_id not in pending_call_ids:
+                    raise ConfigurationError(
+                        "model_context_policy.prepare() returned an orphan or duplicate tool result."
+                    )
+                pending_call_ids.remove(call_id)
+                continue
+
+            if message.tool_call_id is not None:
+                raise ConfigurationError("Only prepared tool messages may define tool_call_id.")
+            if message.tool_calls and message.role != "assistant":
+                raise ConfigurationError("Only prepared assistant messages may request tool calls.")
+            if not message.tool_calls:
+                continue
+
+            try:
+                cls._validate_tool_calls(message.tool_calls)
+                for call in message.tool_calls:
+                    validate_json_value(dict(call.arguments))
+            except (ModelProtocolError, TypeError, ValueError) as exc:
+                raise ConfigurationError("Prepared messages contain invalid tool calls.") from exc
+            current_call_ids = {call.id for call in message.tool_calls}
+            if seen_call_ids.intersection(current_call_ids):
+                raise ConfigurationError("Prepared tool call IDs must be unique across the message sequence.")
+            seen_call_ids.update(current_call_ids)
+            pending_call_ids = current_call_ids
+
+        if pending_call_ids:
+            raise ConfigurationError("model_context_policy.prepare() removed one or more required tool results.")
 
     def _validate_search_providers(
         self,

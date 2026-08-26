@@ -28,6 +28,12 @@ MainModel and VisionModel are public protocols. Applications can inject fakes,
 custom transports, or different providers. LiteLLM is the default integration
 and supports separate main and vision configuration.
 
+A `ModelContextPolicy` prepares an isolated message view immediately before each
+main-model completion. Its default implementation preserves all messages.
+Application policies may select or summarize older context using run metadata
+and tool outcomes, while Myli keeps the original run history and enforces pinned
+prompts plus complete, uniquely identified assistant tool-call/result groups.
+
 VisionModel receives a VisualReviewRequest containing one or more labeled images,
 the review prompt, optional system guidance, detail hints, and an optional JSON
 Schema. This keeps image order and semantic roles explicit across the main-agent to

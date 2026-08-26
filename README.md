@@ -84,6 +84,12 @@ The LiteLLM main implementation supports structured, JSON, and text output
 modes, rejects options that override client-owned request fields, and translates
 provider failures into Myli's stable exception hierarchy.
 
+Before every `MainModel.complete` call, Myli runs an injectable
+`ModelContextPolicy`. Its safe default preserves the complete context. Custom
+policies can compact or relevance-rank older messages using the run and evidence
+metadata in `ModelContext`; pinned system/current-run prompts and complete
+assistant tool-call/result groups are enforced before provider dispatch.
+
 Vision calls use `VisualReviewRequest`, which keeps labels and ordering explicit
 for one or more images and can request output with an application-owned JSON
 Schema. `LiteLLMVisionModel` handles the multi-image transport and validates
@@ -108,6 +114,7 @@ step and tool-batch IDs, and its zero-based position and size within that batch:
 
 ~~~python
 async def execute(arguments, context): ...
+
 
 def model_view(result, context): ...  # optional, synchronous
 ~~~

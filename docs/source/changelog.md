@@ -5,6 +5,11 @@ the public contracts evolve.
 
 ## Unreleased
 
+- A synchronous `ModelContextPolicy` hook now runs before every main-model
+  completion. `ModelContext` exposes run and step metadata, complete tool
+  outcomes, and pinned message indexes. The safe default retains all messages;
+  injected policies may compact or relevance-rank context while Myli enforces
+  pinned prompts and provider-valid tool-call/result groups.
 - Custom `AgentTool` implementations may define a synchronous `model_view` to
   send a smaller strict-JSON result to the model while retaining the complete
   `ToolOutcome` for policies, middleware, traces, and application persistence.

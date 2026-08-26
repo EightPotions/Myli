@@ -42,6 +42,34 @@ Pass generation settings such as `timeout`, `temperature`, or token limits via
 tools, output format, and streaming are client-owned and cannot be overridden
 through those option mappings.
 
+### Model-context policy
+
+Myli calls a synchronous {py:class}`~myli.ModelContextPolicy` immediately before
+every `MainModel.complete` call. The default policy preserves the complete
+message sequence. Applications can inject a policy to compact older exchanges,
+apply a token budget, or rank context with application-specific relevance:
+
+```python
+class ApplicationContextPolicy:
+    def prepare(self, messages, context):
+        pinned = set(context.pinned_message_indexes)
+        selected = select_relevant_indexes(messages, context.tool_outcomes)
+        selected.update(pinned)
+        return tuple(messages[index] for index in sorted(selected))
+
+
+myli = Myli(..., model_context_policy=ApplicationContextPolicy())
+```
+
+{py:class}`~myli.ModelContext` exposes the run request, step identity,
+capabilities, completed tool outcomes, and pinned system/current-run message
+indexes. A policy receives an isolated copy and affects only the next provider
+request; Myli retains its complete internal run history. Returned messages must
+keep every pinned message and complete assistant tool-call/result group. Myli
+rejects orphaned, partial, or duplicate tool exchanges before calling a
+provider. This lets relevance policies retain errors and recent evidence without
+creating provider-invalid request histories.
+
 ## Rendering
 
 The renderer receives a document that already passed the `DesignSpec` validator

@@ -86,6 +86,51 @@ class ModelResponse:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class ModelContext:
+    """Immutable run state available to a model-context policy.
+
+    ``pinned_message_indexes`` refers to the unprepared ``messages`` sequence
+    passed to :meth:`ModelContextPolicy.prepare`. Myli pins the system prompt and
+    the current run prompt; a policy may select, summarize, or reorder other
+    messages while retaining those required messages.
+    """
+
+    run_id: str
+    request: str
+    step: int
+    step_id: str
+    can_edit: bool
+    capabilities: frozenset[str]
+    tool_outcomes: tuple[ToolOutcome, ...]
+    pinned_message_indexes: tuple[int, ...]
+
+
+@runtime_checkable
+class ModelContextPolicy(Protocol):
+    """Prepare the messages sent before every main-model completion."""
+
+    def prepare(
+        self,
+        messages: Sequence[Message],
+        context: ModelContext,
+    ) -> Sequence[Message]:
+        """Return a synchronous, provider-valid view of the run messages."""
+
+
+@dataclass(frozen=True, slots=True)
+class DefaultModelContextPolicy:
+    """Safe default policy that preserves the complete message sequence."""
+
+    def prepare(
+        self,
+        messages: Sequence[Message],
+        context: ModelContext,
+    ) -> Sequence[Message]:
+        del context
+        return tuple(messages)
+
+
 @runtime_checkable
 class MainModel(Protocol):
     """Injectable main-model client."""

@@ -64,6 +64,18 @@ available below myli.integrations.
 
 ## Models and messages
 
+~~~{autoclass} ModelContextPolicy
+:members:
+~~~
+
+~~~{autoclass} DefaultModelContextPolicy
+:members:
+~~~
+
+~~~{autoclass} ModelContext
+:members:
+~~~
+
 ~~~{autoclass} MainModel
 :members:
 ~~~

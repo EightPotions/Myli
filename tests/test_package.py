@@ -22,6 +22,9 @@ def test_core_harness_is_exposed() -> None:
     assert myli.InputArtifact.__name__ == "InputArtifact"
     assert myli.VisualReviewImage.__name__ == "VisualReviewImage"
     assert myli.VisualReviewRequest.__name__ == "VisualReviewRequest"
+    assert myli.ModelContext.__name__ == "ModelContext"
+    assert myli.ModelContextPolicy.__name__ == "ModelContextPolicy"
+    assert myli.DefaultModelContextPolicy.__name__ == "DefaultModelContextPolicy"
     assert not hasattr(myli, "ImageAsset")
     assert not hasattr(myli, "ImageSearchTool")
     assert not hasattr(myli, "FunctionImageSearch")

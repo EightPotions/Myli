@@ -42,6 +42,19 @@ authorization-safe subset. CandidatePolicy runs before proposed rendering and
 before final return, allowing the host to enforce prerequisites, permissions,
 provenance, licensing, tenant access, geometry, tokens, and invariants.
 
+Custom tools may define a synchronous `model_view(result, context)` projection.
+The projection is strict JSON used only for the next model tool message. The
+complete `execute` result remains in ToolOutcome for policies, middleware,
+traces, and application persistence; omitting `model_view` preserves the default
+of showing the complete result to the model.
+
+When a projection differs from its complete result, Myli assigns the originating
+outcome a run-scoped `evidence_ref` and includes that reference in the model
+view. The built-in `retrieve_evidence` tool resolves only references from the
+active run. It can return the complete result or an RFC 6901 subtree selected by
+`json_pointer`, subject to pointer-length, pointer-depth, response-size, and
+per-run call limits.
+
 ToolMiddleware sits around every built-in and application tool. It can allow,
 reject, or defer work and can observe the resulting outcome. This supports
 approval, audit, ordering, transactions, rate limits, and tenant boundaries

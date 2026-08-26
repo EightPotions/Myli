@@ -407,6 +407,7 @@ class ToolOutcome:
     message: str | None = None
     latency_seconds: float | None = None
     result_size_bytes: int | None = None
+    evidence_ref: str | None = None
 
     @property
     def succeeded(self) -> bool:
@@ -420,6 +421,7 @@ class ToolOutcome:
             "arguments": {} if redact else _safe_trace_value(self.arguments),
             "status": self.status,
             "result": None if redact else _safe_trace_value(self.result),
+            "evidence_ref": self.evidence_ref,
             "message": self.message,
             "latency_seconds": self.latency_seconds,
             "result_size_bytes": self.result_size_bytes,
@@ -499,7 +501,12 @@ class ToolContext:
 
 @runtime_checkable
 class AgentTool(Protocol):
-    """Domain-neutral executable tool contract."""
+    """Domain-neutral executable tool contract.
+
+    Implementations may also define a synchronous ``model_view(result, context)``
+    method. Myli uses its strict-JSON return value only in the tool message sent
+    to the model; complete results remain in :class:`ToolOutcome` evidence.
+    """
 
     name: str
     description: str
@@ -513,6 +520,14 @@ class AgentTool(Protocol):
 
     async def execute(self, arguments: Mapping[str, Any], context: ToolContext) -> Any:
         """Execute one validated call in its run context."""
+
+    def model_view(self, result: Any, context: ToolContext) -> Any:
+        """Optionally project a complete result into model-visible strict JSON.
+
+        Myli detects this method dynamically, so tool implementations may omit it.
+        """
+
+        return result
 
 
 @dataclass(frozen=True, slots=True)

@@ -108,13 +108,23 @@ step and tool-batch IDs, and its zero-based position and size within that batch:
 
 ~~~python
 async def execute(arguments, context): ...
+
+def model_view(result, context): ...  # optional, synchronous
 ~~~
 
 Myli validates arguments and results, enforces capabilities and limits, and
 records a ToolOutcome with one of succeeded, failed, rejected, timed_out, or
-deferred. Calls are sequential by default. Parallel execution requires both the
-harness option and an explicit parallel_safe declaration on every call in the
-batch. Each tool can select FailureMode.RETURN_ERROR or FailureMode.RAISE.
+deferred. When a tool defines `model_view`, only that strict-JSON projection is
+returned to the model. Candidate policies, middleware, traces, and `RunResult`
+retain the complete `execute` result. Without `model_view`, the complete result
+is also the model-facing result. When the projection differs from the complete
+result, Myli adds a run-scoped `evidence_ref` and exposes the bounded built-in
+`retrieve_evidence(evidence_ref, json_pointer?)` tool. The model can retrieve the
+complete result or one RFC 6901 subtree without making all evidence visible by
+default. Calls are sequential by default. Parallel
+execution requires both the harness option and an explicit parallel_safe
+declaration on every call in the batch. Each tool can select
+FailureMode.RETURN_ERROR or FailureMode.RAISE.
 
 ToolMiddleware can allow, reject, or defer work before execution and observe the
 outcome afterward. Applications can use it for approval, audit, tenancy,

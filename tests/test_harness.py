@@ -1111,6 +1111,227 @@ def test_custom_agent_tool_enforces_capabilities_and_per_run_limit() -> None:
     assert steps == list(result.traces)
 
 
+def test_custom_agent_tool_can_limit_only_the_model_visible_result() -> None:
+    complete_result = {
+        "summary": "Use navy.",
+        "records": [
+            {"id": "brand-primary", "value": "navy", "audit_revision": 17},
+            {"id": "brand-secondary", "value": "cream", "audit_revision": 9},
+        ],
+    }
+
+    class ProjectedAgentTool(FakeAgentTool):
+        def __init__(self) -> None:
+            super().__init__(required_capabilities=frozenset(), result=complete_result)
+            self.model_contexts: list[ToolContext] = []
+
+        def model_view(self, result: Any, context: ToolContext) -> Any:
+            self.model_contexts.append(context)
+            result["records"].clear()
+            return {"summary": result["summary"]}
+
+    policy_contexts: list[CandidateContext] = []
+
+    def capture_policy(
+        candidate: dict[str, Any],
+        current: dict[str, Any],
+        context: CandidateContext,
+    ) -> None:
+        del candidate, current
+        policy_contexts.append(context)
+
+    def retrieve_evidence_values(request: ModelRequest) -> ModelResponse:
+        projected = json.loads(request.messages[-1].content or "null")
+        return ModelResponse(
+            tool_calls=(
+                ToolCall(
+                    id="retrieve-secondary",
+                    name="retrieve_evidence",
+                    arguments={
+                        "evidence_ref": projected["evidence_ref"],
+                        "json_pointer": "/records/1/value",
+                    },
+                ),
+                ToolCall(
+                    id="retrieve-complete",
+                    name="retrieve_evidence",
+                    arguments={"evidence_ref": projected["evidence_ref"]},
+                ),
+            )
+        )
+
+    tool = ProjectedAgentTool()
+    model = FakeMainAgent(
+        [
+            ModelResponse(
+                tool_calls=(
+                    ToolCall(
+                        id="lookup-projected",
+                        name="lookup_brand",
+                        arguments={"key": "primary"},
+                    ),
+                )
+            ),
+            retrieve_evidence_values,
+            ModelResponse(content=json.dumps({"message": "Use navy.", "patch": []})),
+        ]
+    )
+    harness = Myli(
+        main_model=model,
+        design_spec=DESIGN_SPEC,
+        tools=[tool],
+        candidate_policies=[capture_policy],
+    )
+
+    result = asyncio.run(
+        harness.run(
+            request="Look up the brand.",
+            design=CURRENT_DESIGN,
+            can_edit=True,
+        )
+    )
+
+    projected_message = model.requests[1].messages[-1]
+    assert projected_message.role == "tool"
+    projected = json.loads(projected_message.content or "null")
+    evidence_ref = projected.pop("evidence_ref")
+    assert projected == {"summary": "Use navy."}
+    assert evidence_ref.startswith(f"{result.run_id}:evidence:")
+    retrieved_messages = model.requests[2].messages[-2:]
+    assert json.loads(retrieved_messages[0].content or "null") == {
+        "evidence_ref": evidence_ref,
+        "json_pointer": "/records/1/value",
+        "value": "cream",
+    }
+    assert json.loads(retrieved_messages[1].content or "null") == {
+        "evidence_ref": evidence_ref,
+        "json_pointer": "",
+        "value": complete_result,
+    }
+    assert [definition.name for definition in model.requests[0].tools] == [
+        "lookup_brand",
+    ]
+    assert [definition.name for definition in model.requests[1].tools] == [
+        "retrieve_evidence",
+        "lookup_brand",
+    ]
+    assert result.tool_outcomes[0].result == complete_result
+    assert result.tool_outcomes[0].evidence_ref == evidence_ref
+    assert result.tool_outcomes[0].to_dict()["evidence_ref"] == evidence_ref
+    assert result.traces[0].tool_outcomes[0].result == complete_result
+    assert policy_contexts[-1].tool_outcomes[0].result == complete_result
+    assert tool.model_contexts[0].run_id == result.run_id
+
+
+def test_evidence_retrieval_is_run_scoped_and_bounded() -> None:
+    class ProjectedAgentTool(FakeAgentTool):
+        def __init__(self) -> None:
+            super().__init__(
+                required_capabilities=frozenset(),
+                max_calls_per_run=1,
+                max_result_bytes=4096,
+                result={"blob": ["x" * 1000, "small"]},
+            )
+
+        def model_view(self, result: Any, context: ToolContext) -> Any:
+            del result, context
+            return {"summary": "Large evidence is available on demand."}
+
+    def retrieve_bounded_values(request: ModelRequest) -> ModelResponse:
+        evidence_ref = json.loads(request.messages[-1].content or "null")["evidence_ref"]
+        return ModelResponse(
+            tool_calls=(
+                ToolCall(
+                    id="retrieve-too-large",
+                    name="retrieve_evidence",
+                    arguments={"evidence_ref": evidence_ref},
+                ),
+                ToolCall(
+                    id="retrieve-small",
+                    name="retrieve_evidence",
+                    arguments={
+                        "evidence_ref": evidence_ref,
+                        "json_pointer": "/blob/1",
+                    },
+                ),
+                ToolCall(
+                    id="retrieve-foreign",
+                    name="retrieve_evidence",
+                    arguments={"evidence_ref": "another-run:evidence:1"},
+                ),
+            )
+        )
+
+    model = FakeMainAgent(
+        [
+            ModelResponse(
+                tool_calls=(
+                    ToolCall(
+                        id="lookup-large",
+                        name="lookup_brand",
+                        arguments={"key": "primary"},
+                    ),
+                )
+            ),
+            retrieve_bounded_values,
+            ModelResponse(content=json.dumps({"message": "Retrieved.", "patch": None})),
+        ]
+    )
+    harness = Myli(
+        main_model=model,
+        design_spec=DESIGN_SPEC,
+        tools=[ProjectedAgentTool()],
+        limits=HarnessLimits(
+            max_evidence_retrievals=2,
+            max_evidence_result_bytes=256,
+        ),
+    )
+
+    result = asyncio.run(harness.run(request="Inspect the evidence.", design=CURRENT_DESIGN))
+
+    assert [outcome.status for outcome in result.tool_outcomes] == [
+        "succeeded",
+        "rejected",
+        "succeeded",
+        "rejected",
+    ]
+    assert "use json_pointer" in (result.tool_outcomes[1].message or "")
+    assert result.tool_outcomes[2].result["value"] == "small"
+    assert "from this run" in (result.tool_outcomes[3].message or "")
+
+
+def test_complete_model_view_does_not_create_an_evidence_reference() -> None:
+    class IdentityViewAgentTool(FakeAgentTool):
+        def model_view(self, result: Any, context: ToolContext) -> Any:
+            del context
+            return result
+
+    model = FakeMainAgent(
+        [
+            ModelResponse(
+                tool_calls=(
+                    ToolCall(
+                        id="lookup-complete-view",
+                        name="lookup_brand",
+                        arguments={"key": "primary"},
+                    ),
+                )
+            ),
+            ModelResponse(content=json.dumps({"message": "Use navy.", "patch": None})),
+        ]
+    )
+    harness = Myli(
+        main_model=model,
+        design_spec=DESIGN_SPEC,
+        tools=[IdentityViewAgentTool(required_capabilities=frozenset())],
+    )
+
+    result = asyncio.run(harness.run(request="Look up the brand.", design=CURRENT_DESIGN))
+
+    assert json.loads(model.requests[1].messages[-1].content or "null") == {"value": "navy"}
+    assert result.tool_outcomes[0].evidence_ref is None
+
+
 def test_custom_agent_tool_denies_missing_capabilities() -> None:
     tool = FakeAgentTool()
     model = FakeMainAgent(

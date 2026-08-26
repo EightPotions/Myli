@@ -5,6 +5,12 @@ the public contracts evolve.
 
 ## Unreleased
 
+- Custom `AgentTool` implementations may define a synchronous `model_view` to
+  send a smaller strict-JSON result to the model while retaining the complete
+  `ToolOutcome` for policies, middleware, traces, and application persistence.
+  Reduced projections receive a run-scoped `evidence_ref`; the bounded built-in
+  `retrieve_evidence` tool can retrieve the complete result or an RFC 6901
+  subtree on demand.
 - `render_design` accepts `base_render_ref` for incremental revisions of a
   successful rendered candidate. Patch chains are composed so `commit_render`
   still returns a proposal relative to the original document.

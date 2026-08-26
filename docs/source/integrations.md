@@ -180,6 +180,11 @@ class BrandLookup:
     async def execute(self, arguments, context):
         return await brand_store.lookup(arguments["name"])
 
+    def model_view(self, result, context):
+        # Keep complete store metadata in ToolOutcome, but spend model context
+        # only on the value needed for the next step.
+        return {"value": result["value"]}
+
 
 myli = Myli(..., tools=[BrandLookup()])
 result = await myli.run(
@@ -188,6 +193,19 @@ result = await myli.run(
     capabilities={"brand.read"},
 )
 ```
+
+`model_view` is optional and synchronous. Its return value must be strict JSON
+and fit the tool's `max_result_bytes` limit. It affects only the tool message sent
+to the model; candidate policies, middleware, traces, and `RunResult` retain the
+complete validated result returned by `execute`.
+
+If the model view differs from the complete result, its tool message also contains
+a run-scoped `evidence_ref`. Myli then exposes
+`retrieve_evidence(evidence_ref, json_pointer?)`: omitting `json_pointer` requests
+the complete result, while an RFC 6901 pointer requests one subtree. Retrieval is
+bounded by `HarnessLimits.max_evidence_retrievals`,
+`max_evidence_result_bytes`, `max_evidence_pointer_chars`, and
+`max_pointer_depth`. References from other runs are rejected.
 
 Capability names are application-defined and independent of `can_edit`, which
 continues to guard design patches.

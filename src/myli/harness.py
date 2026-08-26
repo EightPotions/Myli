@@ -78,6 +78,7 @@ from .json_patch import JsonPatchLimits, apply_json_patch
 RENDER_TOOL_NAME = "render_design"
 COMMIT_RENDER_TOOL_NAME = "commit_render"
 INSPECT_ASSET_TOOL_NAME = "inspect_asset"
+RETRIEVE_EVIDENCE_TOOL_NAME = "retrieve_evidence"
 ASSET_SEARCH_TOOL_PREFIX = "search_assets_"
 SEARCH_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 TOOL_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
@@ -113,6 +114,9 @@ class HarnessLimits:
     max_searches_per_provider: int = 3
     max_search_results: int = 8
     max_asset_inspections: int = 6
+    max_evidence_retrievals: int = 6
+    max_evidence_result_bytes: int = 65_536
+    max_evidence_pointer_chars: int = 4_096
     max_patch_operations: int = 100
     max_patch_bytes: int = 262_144
     max_document_bytes: int = 2_097_152
@@ -138,6 +142,9 @@ class HarnessLimits:
             "max_searches_per_provider",
             "max_search_results",
             "max_asset_inspections",
+            "max_evidence_retrievals",
+            "max_evidence_result_bytes",
+            "max_evidence_pointer_chars",
             "max_vision_questions",
             "max_vision_question_chars",
             "max_patch_operations",
@@ -202,6 +209,8 @@ class _RunState(Generic[TDesign]):
     search_calls: dict[str, int] = field(default_factory=dict)
     render_calls: int = 0
     inspection_calls: int = 0
+    evidence_count: int = 0
+    evidence_retrievals: int = 0
     render_proposals: dict[str, _RenderProposal] = field(default_factory=dict)
     committed_render: _RenderProposal | None = None
 
@@ -209,6 +218,7 @@ class _RunState(Generic[TDesign]):
 @dataclass(frozen=True, slots=True)
 class _ToolConfig:
     tool: AgentTool
+    model_view: Callable[[Any, ToolContext], Any] | None
     input_schema: Mapping[str, Any]
     validator: Draft202012Validator
     required_capabilities: frozenset[str]
@@ -223,6 +233,7 @@ class _ToolConfig:
 class _CallExecution:
     outcome: ToolOutcome
     failure_mode: FailureMode
+    model_content: str | None = field(default=None, compare=False)
     cause: Exception | None = field(default=None, compare=False)
 
 
@@ -485,7 +496,7 @@ class Myli(Generic[TDesign]):
                     self.main_model.complete(
                         ModelRequest(
                             messages=copy.deepcopy(tuple(messages)),
-                            tools=self._tool_definitions_for(state.capabilities),
+                            tools=self._tool_definitions_for(state),
                             output_schema=copy.deepcopy(self._output_schema),
                         )
                     ),
@@ -592,12 +603,17 @@ class Myli(Generic[TDesign]):
                     on_event=on_event,
                 )
                 outcomes = tuple(execution.outcome for execution in executions)
-                for outcome in outcomes:
+                for execution in executions:
+                    outcome = execution.outcome
                     messages.append(
                         Message(
                             role="tool",
                             tool_call_id=outcome.call_id,
-                            content=self._outcome_content(outcome),
+                            content=(
+                                execution.model_content
+                                if execution.model_content is not None
+                                else self._outcome_content(outcome)
+                            ),
                         )
                     )
                 await self._record_step(
@@ -866,6 +882,30 @@ class Myli(Generic[TDesign]):
                     },
                 )
             )
+        if any(config.model_view is not None for config in self._tools.values()):
+            definitions.append(
+                ToolDefinition(
+                    name=RETRIEVE_EVIDENCE_TOOL_NAME,
+                    description=(
+                        "Retrieve omitted data from a projected custom-tool result. Use only "
+                        "an exact evidence_ref returned in this run. Omit json_pointer to "
+                        "retrieve the complete result, or provide an RFC 6901 JSON Pointer "
+                        "to retrieve one bounded subtree."
+                    ),
+                    input_schema={
+                        "type": "object",
+                        "properties": {
+                            "evidence_ref": {"type": "string", "minLength": 1},
+                            "json_pointer": {
+                                "type": "string",
+                                "maxLength": self.limits.max_evidence_pointer_chars,
+                            },
+                        },
+                        "required": ["evidence_ref"],
+                        "additionalProperties": False,
+                    },
+                )
+            )
         definitions.extend(
             ToolDefinition(
                 name=config.tool.name,
@@ -878,7 +918,7 @@ class Myli(Generic[TDesign]):
 
     def _tool_definitions_for(
         self,
-        capabilities: frozenset[str],
+        state: _RunState[TDesign],
     ) -> tuple[ToolDefinition, ...]:
         return tuple(
             ToolDefinition(
@@ -887,8 +927,11 @@ class Myli(Generic[TDesign]):
                 input_schema=copy.deepcopy(dict(definition.input_schema)),
             )
             for definition in self._tool_definitions
-            if definition.name not in self._tools
-            or self._tools[definition.name].required_capabilities.issubset(capabilities)
+            if (definition.name != RETRIEVE_EVIDENCE_TOOL_NAME or state.evidence_count > 0)
+            and (
+                definition.name not in self._tools
+                or self._tools[definition.name].required_capabilities.issubset(state.capabilities)
+            )
         )
 
     def _build_output_schema(self) -> dict[str, Any]:
@@ -1125,6 +1168,10 @@ class Myli(Generic[TDesign]):
             return self._commit_render(call, state, failure_mode)
         if call.name == INSPECT_ASSET_TOOL_NAME and self._search_providers and self.vision_model is not None:
             return await self._inspect_asset(call, state, failure_mode)
+        if call.name == RETRIEVE_EVIDENCE_TOOL_NAME and any(
+            config.model_view is not None for config in self._tools.values()
+        ):
+            return self._retrieve_evidence(call, state, failure_mode)
         provider = self._search_providers.get(call.name)
         if provider is not None:
             return await self._search_assets(call, provider, state, failure_mode)
@@ -1243,12 +1290,160 @@ class Myli(Generic[TDesign]):
                 ),
                 failure_mode=failure_mode,
             )
+        outcome = self._outcome(
+            state,
+            call,
+            status="succeeded",
+            result=serialized,
+            result_size_bytes=size,
+        )
+        if config.model_view is None:
+            return _CallExecution(
+                outcome=outcome,
+                failure_mode=failure_mode,
+            )
+        try:
+            model_value = config.model_view(copy.deepcopy(serialized), context)
+            if inspect.isawaitable(model_value):
+                close = getattr(model_value, "close", None)
+                if callable(close):
+                    close()
+                raise TypeError("model_view must be synchronous.")
+            model_value, _ = _serialize_tool_result(model_value)
+            evidence_ref: str | None = None
+            if first_json_difference(serialized, model_value) is not None:
+                evidence_ref = f"{state.run_id}:evidence:{state.evidence_count + 1}"
+                if isinstance(model_value, Mapping) and "evidence_ref" not in model_value:
+                    model_value = {**model_value, "evidence_ref": evidence_ref}
+                else:
+                    model_value = {"result": model_value, "evidence_ref": evidence_ref}
+            model_value, model_size = _serialize_tool_result(model_value)
+            if model_size > config.max_result_bytes:
+                raise ValueError(f"model_view result exceeds the {config.max_result_bytes}-byte limit.")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            return _CallExecution(
+                outcome=replace(
+                    outcome,
+                    status="failed",
+                    message=f"Tool {call.name} model_view failed: {_concise(str(exc))}",
+                ),
+                failure_mode=failure_mode,
+                cause=exc,
+            )
+        if evidence_ref is not None:
+            state.evidence_count += 1
+            outcome = replace(outcome, evidence_ref=evidence_ref)
+        return _CallExecution(
+            outcome=outcome,
+            failure_mode=failure_mode,
+            model_content=json.dumps(
+                model_value,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                allow_nan=False,
+            ),
+        )
+
+    def _retrieve_evidence(
+        self,
+        call: ToolCall,
+        state: _RunState[TDesign],
+        failure_mode: FailureMode,
+    ) -> _CallExecution:
+        argument_names = set(call.arguments)
+        if "evidence_ref" not in argument_names or not argument_names.issubset({"evidence_ref", "json_pointer"}):
+            return self._call_error(
+                state,
+                call,
+                failure_mode,
+                status="rejected",
+                message="retrieve_evidence requires evidence_ref and accepts optional json_pointer.",
+            )
+        reference = call.arguments["evidence_ref"]
+        if not isinstance(reference, str) or not reference:
+            return self._call_error(
+                state,
+                call,
+                failure_mode,
+                status="rejected",
+                message="retrieve_evidence evidence_ref must be non-empty text.",
+            )
+        source_outcome = next(
+            (outcome for outcome in state.outcomes if outcome.succeeded and outcome.evidence_ref == reference),
+            None,
+        )
+        if source_outcome is None:
+            return self._call_error(
+                state,
+                call,
+                failure_mode,
+                status="rejected",
+                message="The evidence_ref does not identify projected evidence from this run.",
+            )
+        source = source_outcome.result
+        pointer = call.arguments.get("json_pointer", "")
+        if not isinstance(pointer, str) or len(pointer) > self.limits.max_evidence_pointer_chars:
+            return self._call_error(
+                state,
+                call,
+                failure_mode,
+                status="rejected",
+                message=(
+                    "retrieve_evidence json_pointer must be text no longer than "
+                    f"{self.limits.max_evidence_pointer_chars} characters."
+                ),
+            )
+        if state.evidence_retrievals >= self.limits.max_evidence_retrievals:
+            return self._call_error(
+                state,
+                call,
+                failure_mode,
+                status="rejected",
+                message="The evidence retrieval budget is exhausted.",
+            )
+        state.evidence_retrievals += 1
+        try:
+            value = _resolve_json_pointer(
+                source,
+                pointer,
+                max_depth=self.limits.max_pointer_depth,
+            )
+            result, size = _serialize_tool_result(
+                {
+                    "evidence_ref": reference,
+                    "json_pointer": pointer,
+                    "value": value,
+                }
+            )
+        except (TypeError, ValueError) as exc:
+            return self._call_error(
+                state,
+                call,
+                failure_mode,
+                status="rejected",
+                message=f"Evidence retrieval failed: {exc}",
+                cause=exc,
+            )
+        if size > self.limits.max_evidence_result_bytes:
+            return self._call_error(
+                state,
+                call,
+                failure_mode,
+                status="rejected",
+                message=(
+                    "Retrieved evidence exceeds the "
+                    f"{self.limits.max_evidence_result_bytes}-byte limit; use json_pointer "
+                    "to select a smaller value."
+                ),
+            )
         return _CallExecution(
             outcome=self._outcome(
                 state,
                 call,
                 status="succeeded",
-                result=serialized,
+                result=result,
                 result_size_bytes=size,
             ),
             failure_mode=failure_mode,
@@ -2272,6 +2467,8 @@ class Myli(Generic[TDesign]):
             available.update({RENDER_TOOL_NAME, COMMIT_RENDER_TOOL_NAME})
         if self._search_providers and self.vision_model is not None:
             available.add(INSPECT_ASSET_TOOL_NAME)
+        if any(config.model_view is not None for config in self._tools.values()):
+            available.add(RETRIEVE_EVIDENCE_TOOL_NAME)
         unknown = sorted(set(self._failure_modes).difference(available))
         if unknown:
             raise ConfigurationError("tool_failure_modes contains unavailable tool names: " + ", ".join(unknown))
@@ -2281,6 +2478,7 @@ class Myli(Generic[TDesign]):
             RENDER_TOOL_NAME,
             COMMIT_RENDER_TOOL_NAME,
             INSPECT_ASSET_TOOL_NAME,
+            RETRIEVE_EVIDENCE_TOOL_NAME,
             *self._search_providers,
         }
         validated: dict[str, _ToolConfig] = {}
@@ -2312,6 +2510,9 @@ class Myli(Generic[TDesign]):
                 raise ConfigurationError(f"Agent tool {name} input_schema is invalid: {exc.message}") from exc
             if not callable(execute):
                 raise ConfigurationError(f"Agent tool {name} execute must be callable.")
+            model_view = getattr(tool, "model_view", None)
+            if model_view is not None and not callable(model_view):
+                raise ConfigurationError(f"Agent tool {name} model_view must be callable.")
             capabilities = self._validate_capabilities(required_capabilities)
             if isinstance(max_calls_per_run, bool) or not isinstance(max_calls_per_run, int) or max_calls_per_run < 1:
                 raise ConfigurationError(f"Agent tool {name} max_calls_per_run must be positive.")
@@ -2327,6 +2528,7 @@ class Myli(Generic[TDesign]):
                 raise ConfigurationError(f"Agent tool {name} parallel_safe must be boolean.")
             validated[name] = _ToolConfig(
                 tool=tool,
+                model_view=model_view,
                 input_schema=input_schema,
                 validator=schema_validator,
                 required_capabilities=capabilities,
@@ -2464,6 +2666,52 @@ def _serialize_tool_result(value: Any) -> tuple[Any, int]:
         allow_nan=False,
     )
     return copy.deepcopy(value), len(content.encode("utf-8"))
+
+
+def _resolve_json_pointer(value: Any, pointer: str, *, max_depth: int) -> Any:
+    """Resolve one RFC 6901 pointer without mutating the source value."""
+
+    if pointer == "":
+        return copy.deepcopy(value)
+    if not pointer.startswith("/"):
+        raise ValueError("json_pointer must be empty or start with '/'.")
+    encoded_tokens = pointer[1:].split("/")
+    if len(encoded_tokens) > max_depth:
+        raise ValueError(f"json_pointer exceeds the {max_depth}-segment pointer-depth limit.")
+
+    target = value
+    for encoded in encoded_tokens:
+        token = ""
+        cursor = 0
+        while cursor < len(encoded):
+            character = encoded[cursor]
+            if character != "~":
+                token += character
+                cursor += 1
+                continue
+            if cursor + 1 >= len(encoded) or encoded[cursor + 1] not in {"0", "1"}:
+                raise ValueError("json_pointer contains an invalid '~' escape.")
+            token += "~" if encoded[cursor + 1] == "0" else "/"
+            cursor += 2
+
+        if isinstance(target, Mapping):
+            if token not in target:
+                raise ValueError(f"json_pointer member {token!r} does not exist.")
+            target = target[token]
+            continue
+        if isinstance(target, list):
+            if not re.fullmatch(r"0|[1-9][0-9]*", token):
+                raise ValueError(f"json_pointer array index {token!r} is invalid.")
+            try:
+                index = int(token)
+            except ValueError as exc:
+                raise ValueError(f"json_pointer array index {token!r} is too large.") from exc
+            if index >= len(target):
+                raise ValueError(f"json_pointer array index {token!r} is out of bounds.")
+            target = target[index]
+            continue
+        raise ValueError("json_pointer traverses a scalar value.")
+    return copy.deepcopy(target)
 
 
 def _canonical_json(value: Mapping[str, Any]) -> str:

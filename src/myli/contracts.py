@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import json
 import math
 from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -14,7 +13,7 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError
 from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
 
-from ._json import first_json_difference, validate_json_value
+from ._json import canonical_json_dumps, canonical_json_value, first_json_difference, validate_json_value
 
 
 JsonObject = dict[str, Any]
@@ -32,6 +31,9 @@ class ToolCall:
     id: str
     name: str
     arguments: Mapping[str, Any]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "arguments", canonical_json_value(self.arguments))
 
     def to_dict(self, *, redact: bool = False) -> dict[str, Any]:
         return {
@@ -59,6 +61,9 @@ class ToolDefinition:
     description: str
     input_schema: Mapping[str, Any]
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "input_schema", canonical_json_value(self.input_schema))
+
 
 @dataclass(frozen=True, slots=True)
 class ModelRequest:
@@ -67,6 +72,13 @@ class ModelRequest:
     messages: tuple[Message, ...]
     tools: tuple[ToolDefinition, ...]
     output_schema: Mapping[str, Any]
+
+    def __post_init__(self) -> None:
+        messages = tuple(self.messages)
+        tools = tuple(self.tools)
+        object.__setattr__(self, "messages", messages)
+        object.__setattr__(self, "tools", tools)
+        object.__setattr__(self, "output_schema", canonical_json_value(self.output_schema))
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,6 +117,8 @@ class ModelCallTrace:
     step_id: str = ""
     step: int | None = None
     index: int | None = None
+    cache_write_tokens: int | None = None
+    cache_hit: bool | None = None
 
     @property
     def total_tokens(self) -> int | None:
@@ -117,6 +131,12 @@ class ModelCallTrace:
     @property
     def succeeded(self) -> bool:
         return self.success
+
+    @property
+    def cache_read_tokens(self) -> int | None:
+        """Provider-reported prompt-cache read tokens, when available."""
+
+        return self.cached_tokens
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -133,6 +153,8 @@ class ModelCallTrace:
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
             "cached_tokens": self.cached_tokens,
+            "cache_write_tokens": self.cache_write_tokens,
+            "cache_hit": self.cache_hit,
             "reasoning_tokens": self.reasoning_tokens,
         }
 
@@ -150,6 +172,7 @@ class RunUsage:
     failed_requests: int = 0
     retry_count: int = 0
     latency_seconds: float = 0.0
+    cache_write_tokens: int = 0
 
     @classmethod
     def from_model_calls(cls, calls: Sequence[ModelCallTrace]) -> RunUsage:
@@ -166,6 +189,7 @@ class RunUsage:
             failed_requests=sum(not call.success for call in calls),
             retry_count=sum(call.retry_count for call in calls),
             latency_seconds=sum(call.latency_seconds for call in calls),
+            cache_write_tokens=sum(call.cache_write_tokens or 0 for call in calls),
         )
 
     @property
@@ -195,6 +219,7 @@ class RunUsage:
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
             "cached_tokens": self.cached_tokens,
+            "cache_write_tokens": self.cache_write_tokens,
             "reasoning_tokens": self.reasoning_tokens,
             "request_count": self.request_count,
             "successful_requests": self.successful_requests,
@@ -316,7 +341,7 @@ class VisualReviewRequest:
         if schema is not None:
             if not isinstance(schema, Mapping):
                 raise TypeError("VisualReviewRequest.response_schema must be a mapping.")
-            schema = copy.deepcopy(dict(schema))
+            schema = canonical_json_value(schema)
             try:
                 Draft202012Validator.check_schema(schema)
             except SchemaError as exc:
@@ -498,7 +523,7 @@ class DesignSpec(Generic[TDesign]):
         if self.input_migrator is not None and not callable(self.input_migrator):
             raise TypeError("DesignSpec.input_migrator must be callable.")
         try:
-            schema = copy.deepcopy(dict(self.schema))
+            schema = canonical_json_value(self.schema)
             Draft202012Validator.check_schema(schema)
         except SchemaError as exc:
             raise ValueError(f"DesignSpec.schema is invalid: {exc.message}") from exc
@@ -508,7 +533,7 @@ class DesignSpec(Generic[TDesign]):
             if not isinstance(prompt_schema, Mapping):
                 raise TypeError("DesignSpec.prompt_schema must be a mapping or None.")
             try:
-                prompt_schema = copy.deepcopy(dict(prompt_schema))
+                prompt_schema = canonical_json_value(prompt_schema)
                 Draft202012Validator.check_schema(prompt_schema)
             except SchemaError as exc:
                 raise ValueError(f"DesignSpec.prompt_schema is invalid: {exc.message}") from exc
@@ -981,14 +1006,7 @@ class RunResult(Generic[TDesign]):
 
 
 def _canonical_json(value: Mapping[str, Any]) -> str:
-    validate_json_value(value)
-    return json.dumps(
-        value,
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-        allow_nan=False,
-    )
+    return canonical_json_dumps(value)
 
 
 def _safe_trace_value(value: Any) -> Any:

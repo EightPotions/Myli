@@ -199,6 +199,38 @@ class RuntimeMixin:
         if provider is None and model is not None and "/" in model:
             provider = model.partition("/")[0] or None
         reported_retries = _nonnegative_token_count(metadata.get("retry_count")) or 0
+        cache_usage = metadata.get("cache_usage")
+        cache_usage = cache_usage if isinstance(cache_usage, Mapping) else {}
+        reported_cache_hit = metadata.get("cache_hit")
+        if not isinstance(reported_cache_hit, bool):
+            reported_cache_hit = cache_usage.get("cache_hit")
+        if not isinstance(reported_cache_hit, bool):
+            reported_cache_hit = None
+        cached_tokens = _usage_token_count(
+            usage,
+            "cached_tokens",
+            "cache_read_input_tokens",
+            "cached_content_token_count",
+            "prompt_cache_hit_tokens",
+            nested=(
+                ("input_tokens_details", "cached_tokens"),
+                ("prompt_tokens_details", "cached_tokens"),
+            ),
+        )
+        if cached_tokens is None:
+            cached_tokens = _nonnegative_token_count(cache_usage.get("read_input_tokens"))
+        cache_write_tokens = _usage_token_count(
+            usage,
+            "cache_creation_input_tokens",
+            "cache_write_tokens",
+            "cache_creation_input_token_count",
+            nested=(
+                ("input_tokens_details", "cache_write_tokens"),
+                ("prompt_tokens_details", "cache_write_tokens"),
+            ),
+        )
+        if cache_write_tokens is None:
+            cache_write_tokens = _nonnegative_token_count(cache_usage.get("write_input_tokens"))
         trace = ModelCallTrace(
             index=index,
             run_id=state.run_id,
@@ -220,16 +252,9 @@ class RuntimeMixin:
                 "output_tokens",
                 "completion_tokens",
             ),
-            cached_tokens=_usage_token_count(
-                usage,
-                "cached_tokens",
-                "cache_read_input_tokens",
-                "cached_content_token_count",
-                nested=(
-                    ("input_tokens_details", "cached_tokens"),
-                    ("prompt_tokens_details", "cached_tokens"),
-                ),
-            ),
+            cached_tokens=cached_tokens,
+            cache_write_tokens=cache_write_tokens,
+            cache_hit=reported_cache_hit,
             reasoning_tokens=_usage_token_count(
                 usage,
                 "reasoning_tokens",

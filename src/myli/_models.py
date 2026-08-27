@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import base64
-import json
 from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -12,7 +11,7 @@ from typing import Any, Literal
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
 
-from ._json import strict_json_loads, validate_json_value
+from ._json import canonical_json_dumps, canonical_json_value, strict_json_loads, validate_json_value
 from .contracts import (
     Message,
     ModelRequest,
@@ -115,6 +114,7 @@ class LiteLLMMainModel:
         base_url: str | None = None,
         api_key: str | None = None,
         options: Mapping[str, Any] | None = None,
+        cache_control_injection_points: Sequence[Mapping[str, Any]] | None = None,
         output_mode: OutputMode = "structured",
         completion: CompletionFunction | None = None,
     ) -> None:
@@ -134,6 +134,11 @@ class LiteLLMMainModel:
             reserved=_RESERVED_MAIN_KWARGS,
             parameter="model_options",
         )
+        self.cache_control_injection_points = _configure_cache_control(
+            self.options,
+            cache_control_injection_points,
+            parameter="model_options",
+        )
 
     async def complete(self, request: ModelRequest) -> ModelResponse:
         """Translate a Myli request to the backend and normalize its response."""
@@ -141,7 +146,7 @@ class LiteLLMMainModel:
         call_kwargs: dict[str, Any] = {
             **self.options,
             "messages": [_message_to_backend(message) for message in request.messages],
-            "tools": [_tool_to_backend(tool) for tool in request.tools],
+            "tools": [_tool_to_backend(tool) for tool in sorted(request.tools, key=_tool_order)],
             "stream": False,
         }
         if self.output_mode == "structured":
@@ -149,7 +154,7 @@ class LiteLLMMainModel:
                 "type": "json_schema",
                 "json_schema": {
                     "name": "myli_design_response",
-                    "schema": dict(request.output_schema),
+                    "schema": canonical_json_value(request.output_schema),
                     "strict": True,
                 },
             }
@@ -175,6 +180,7 @@ class LiteLLMVisionModel:
         base_url: str | None = None,
         api_key: str | None = None,
         options: Mapping[str, Any] | None = None,
+        cache_control_injection_points: Sequence[Mapping[str, Any]] | None = None,
         system_prompt: str = DEFAULT_VISION_SYSTEM_PROMPT,
         completion: CompletionFunction | None = None,
     ) -> None:
@@ -190,6 +196,11 @@ class LiteLLMVisionModel:
         self.options = _validated_options(
             options,
             reserved=_RESERVED_VISION_KWARGS,
+            parameter="vision_options",
+        )
+        self.cache_control_injection_points = _configure_cache_control(
+            self.options,
+            cache_control_injection_points,
             parameter="vision_options",
         )
 
@@ -245,7 +256,7 @@ class LiteLLMVisionModel:
                 "type": "json_schema",
                 "json_schema": {
                     "name": request.response_schema_name,
-                    "schema": dict(request.response_schema),
+                    "schema": canonical_json_value(request.response_schema),
                     "strict": True,
                 },
             }
@@ -341,6 +352,35 @@ def _validated_options(
     return kwargs
 
 
+def _configure_cache_control(
+    options: dict[str, Any],
+    injection_points: Sequence[Mapping[str, Any]] | None,
+    *,
+    parameter: str,
+) -> tuple[Mapping[str, Any], ...] | None:
+    option_name = "cache_control_injection_points"
+    if injection_points is not None and option_name in options:
+        raise ConfigurationError(f"{option_name} cannot be provided directly and through {parameter}.")
+    configured = options.get(option_name) if injection_points is None else injection_points
+    if configured is None:
+        return None
+    if isinstance(configured, (str, bytes)) or not isinstance(configured, Sequence):
+        raise ConfigurationError(f"{option_name} must be a sequence of mappings.")
+    try:
+        normalized = tuple(
+            sorted(
+                (canonical_json_value(point) for point in configured if isinstance(point, Mapping)),
+                key=canonical_json_dumps,
+            )
+        )
+    except (TypeError, ValueError) as exc:
+        raise ConfigurationError(f"{option_name} must contain strict JSON values.") from exc
+    if len(normalized) != len(configured):
+        raise ConfigurationError(f"{option_name} must contain only mappings.")
+    options[option_name] = [dict(point) for point in normalized]
+    return normalized
+
+
 def _required_text(value: str, *, name: str) -> str:
     if not isinstance(value, str):
         raise ConfigurationError(f"{name} must be a string.")
@@ -359,7 +399,7 @@ def _optional_text(value: str | None, *, name: str) -> str | None:
 def _message_to_backend(message: Message) -> dict[str, Any]:
     converted: dict[str, Any] = {"role": message.role}
     if message.role == "tool":
-        converted["content"] = message.content or ""
+        converted["content"] = _stable_tool_content(message.content or "")
         converted["tool_call_id"] = message.tool_call_id
         return converted
 
@@ -371,12 +411,7 @@ def _message_to_backend(message: Message) -> dict[str, Any]:
                 "type": "function",
                 "function": {
                     "name": call.name,
-                    "arguments": json.dumps(
-                        dict(call.arguments),
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                        allow_nan=False,
-                    ),
+                    "arguments": canonical_json_dumps(call.arguments),
                 },
             }
             for call in message.tool_calls
@@ -390,9 +425,20 @@ def _tool_to_backend(tool: Any) -> dict[str, Any]:
         "function": {
             "name": tool.name,
             "description": tool.description,
-            "parameters": dict(tool.input_schema),
+            "parameters": canonical_json_value(tool.input_schema),
         },
     }
+
+
+def _tool_order(tool: Any) -> tuple[str, str, str]:
+    return (tool.name, tool.description, canonical_json_dumps(tool.input_schema))
+
+
+def _stable_tool_content(content: str) -> str:
+    try:
+        return canonical_json_dumps(strict_json_loads(content))
+    except (TypeError, ValueError):
+        return content
 
 
 def _response_from_backend(response: Any) -> ModelResponse:
@@ -479,6 +525,8 @@ def _metadata_from_backend(response: Any) -> dict[str, Any]:
         ),
         None,
     )
+    usage = _plain_mapping(_value(response, "usage"))
+    reported_cache_hit = _reported_cache_hit(response, hidden)
     for key, value in (
         ("provider_response_id", _value(response, "id")),
         ("model", _value(response, "model")),
@@ -487,12 +535,80 @@ def _metadata_from_backend(response: Any) -> dict[str, Any]:
             _value(response, "provider") or hidden.get("custom_llm_provider"),
         ),
         ("finish_reason", _value(choice, "finish_reason")),
-        ("usage", _plain_mapping(_value(response, "usage"))),
+        ("usage", usage),
         ("retry_count", retry_count),
+        ("cache_hit", reported_cache_hit),
     ):
         if value is not None:
             metadata[key] = value
+    cache_usage = _cache_usage_metadata(usage, cache_hit=reported_cache_hit)
+    if cache_usage:
+        metadata["cache_usage"] = cache_usage
     return metadata
+
+
+def _reported_cache_hit(response: Any, hidden: Mapping[str, Any]) -> bool | None:
+    candidate = _value(response, "cache_hit")
+    if isinstance(candidate, bool):
+        return candidate
+    candidate = hidden.get("cache_hit")
+    return candidate if isinstance(candidate, bool) else None
+
+
+def _cache_usage_metadata(
+    usage: Mapping[str, Any] | None,
+    *,
+    cache_hit: bool | None,
+) -> dict[str, Any]:
+    if usage is None:
+        usage = {}
+    read_tokens = _reported_usage_count(
+        usage,
+        "cached_tokens",
+        "cache_read_input_tokens",
+        "cached_content_token_count",
+        "prompt_cache_hit_tokens",
+        nested=(
+            ("input_tokens_details", "cached_tokens"),
+            ("prompt_tokens_details", "cached_tokens"),
+        ),
+    )
+    write_tokens = _reported_usage_count(
+        usage,
+        "cache_creation_input_tokens",
+        "cache_write_tokens",
+        "cache_creation_input_token_count",
+        nested=(
+            ("input_tokens_details", "cache_write_tokens"),
+            ("prompt_tokens_details", "cache_write_tokens"),
+        ),
+    )
+    metadata: dict[str, Any] = {}
+    if read_tokens is not None:
+        metadata["read_input_tokens"] = read_tokens
+    if write_tokens is not None:
+        metadata["write_input_tokens"] = write_tokens
+    if cache_hit is not None:
+        metadata["cache_hit"] = cache_hit
+    return metadata
+
+
+def _reported_usage_count(
+    usage: Mapping[str, Any],
+    *names: str,
+    nested: Sequence[tuple[str, str]] = (),
+) -> int | None:
+    for name in names:
+        value = usage.get(name)
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            return value
+    for container_name, name in nested:
+        container = usage.get(container_name)
+        if isinstance(container, Mapping):
+            value = container.get(name)
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                return value
+    return None
 
 
 def _first_choice(response: Any) -> Any:

@@ -42,6 +42,29 @@ Pass generation settings such as `timeout`, `temperature`, or token limits via
 tools, output format, and streaming are client-owned and cannot be overridden
 through those option mappings.
 
+LiteLLM prompt-cache controls remain provider configuration. They can be passed
+through the options mappings used by {py:class}`~myli.Myli`:
+
+```python
+myli = Myli(
+    ...,
+    model_options={
+        "cache_control_injection_points": [
+            {"location": "message", "role": "system"},
+            {"location": "tool_config"},
+        ]
+    },
+)
+```
+
+Direct users of {py:class}`~myli.LiteLLMMainModel` and
+{py:class}`~myli.LiteLLMVisionModel` may instead supply the same
+`cache_control_injection_points` keyword. Myli orders those points and the stable
+request prefix deterministically, but does not infer that configuration produced
+a cache hit. Adapter metadata includes `cache_usage` when the provider reports
+cache reads or writes and includes `cache_hit` only when the backend supplies an
+explicit boolean.
+
 ### Model-context policy
 
 Myli calls a synchronous {py:class}`~myli.ModelContextPolicy` immediately before
@@ -289,8 +312,10 @@ Step traces include assistant and provider-exposed reasoning content, tool calls
 and outcomes, provider metadata, model/tool latency, validation errors, and the
 {py:class}`~myli.ModelCallTrace` values associated with the step. The complete
 ordered call sequence is available on {py:attr}`myli.RunResult.model_calls`, and
-{py:attr}`myli.RunResult.usage` aggregates reported input, output, cached, and
-reasoning tokens with request counts, retries, and latency. Model-call purposes
+{py:attr}`myli.RunResult.usage` aggregates reported input, output, cached,
+cache-write, and reasoning tokens with request counts, retries, and latency.
+Per-call `cache_hit` is tri-state: `True` or `False` only when reported by the
+adapter, otherwise `None`. Model-call purposes
 identify main, render-review, asset-inspection, and comparison requests.
 Configure `trace_redactor` on {py:class}`~myli.Myli` to synchronously or
 asynchronously replace each trace before `on_step` and the final result receive

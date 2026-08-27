@@ -89,7 +89,16 @@ python -m pip install myli
 
 The LiteLLM main implementation supports structured, JSON, and text output
 modes, rejects options that override client-owned request fields, and translates
-provider failures into Myli's stable exception hierarchy.
+provider failures into Myli's stable exception hierarchy. Its main and vision
+adapters accept `cache_control_injection_points` directly or through the
+corresponding options mapping and pass them to LiteLLM without treating cache
+configuration as evidence of a hit.
+
+Myli constructs cache-friendly requests deterministically: JSON Schema object
+keys and JSON tool-result object keys are canonicalized recursively, configurable
+tool registries have stable ordering, LiteLLM wire tools are ordered by name, and
+the base system contract always precedes application guidance. Array order and
+conversation order are preserved because they may be semantically meaningful.
 
 Before every `MainModel.complete` call, Myli runs an injectable
 `ModelContextPolicy`. Its safe default preserves the complete context. Custom
@@ -192,8 +201,10 @@ calls and outcomes, validation failures, response ID, model, finish reason,
 usage, and latency. Each step also contains a ModelCallTrace for its main request
 and any nested vision requests. RunResult.model_calls provides the ordered calls
 for the complete run, including failed attempts, while RunResult.usage aggregates
-reported input, output, cached, and reasoning tokens, request outcomes, retries,
-and model latency. Request purposes distinguish main, render_review,
+reported input, output, cached, cache-write, and reasoning tokens, plus request
+outcomes, retries, and model latency. `ModelCallTrace.cache_hit` remains `None`
+unless an adapter reports an explicit boolean; enabling cache controls alone never
+claims a hit. Request purposes distinguish main, render_review,
 asset_inspection, and comparison work. Traces provide to_dict() and redacted().
 Async on_step and a configurable trace redactor make no persistence assumptions.
 

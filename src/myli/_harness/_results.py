@@ -9,7 +9,7 @@ import json
 from collections.abc import Mapping, Sequence
 from typing import Any, Literal
 
-from .._json import first_json_difference, strict_json_loads, validate_json_value
+from .._json import canonical_json_dumps, first_json_difference, strict_json_loads, validate_json_value
 from ..contracts import (
     Asset,
     CandidateContext,
@@ -484,12 +484,7 @@ class ResultMixin:
             payload = outcome.result
         else:
             payload = {"status": outcome.status, "error": outcome.message}
-        return json.dumps(
-            payload,
-            ensure_ascii=False,
-            separators=(",", ":"),
-            allow_nan=False,
-        )
+        return canonical_json_dumps(payload)
 
     def _failure_mode(self, tool_name: str) -> FailureMode:
         configured = self._failure_modes.get(tool_name)

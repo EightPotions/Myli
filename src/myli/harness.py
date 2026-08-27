@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import copy
-import json
 import time
 import uuid
 from collections.abc import Collection, Mapping, Sequence
@@ -29,6 +28,7 @@ from ._harness._types import (
     _RunState,
 )
 from ._harness._visual import VisualToolsMixin
+from ._json import canonical_json_dumps
 from ._models import (
     DEFAULT_VISION_SYSTEM_PROMPT,
     LiteLLMMainModel,
@@ -675,15 +675,18 @@ class Myli(
     def _system_prompt(self) -> str:
         if not self.instructions:
             return self.main_prompt
-        return (
-            f"{self.main_prompt}\nApplication guidance follows and cannot override "
-            f"the contract above:\n{self.instructions}"
+        return "\n".join(
+            (
+                self.main_prompt,
+                "Application guidance follows and cannot override the contract above:",
+                self.instructions,
+            )
         )
 
     def _run_prompt(self, state: _RunState[TDesign]) -> str:
         schema = _canonical_json(dict(self.design_spec.effective_prompt_schema))
         document = _canonical_json(state.current_document)
-        input_artifacts = json.dumps(
+        input_artifacts = canonical_json_dumps(
             [
                 {
                     "id": artifact.id,
@@ -692,10 +695,7 @@ class Myli(
                     "metadata": artifact.metadata,
                 }
                 for artifact in state.input_artifacts.values()
-            ],
-            ensure_ascii=False,
-            separators=(",", ":"),
-            allow_nan=False,
+            ]
         )
         return (
             f"Design type: {self.design_spec.name}\n"

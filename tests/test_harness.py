@@ -678,7 +678,10 @@ def test_run_accounts_for_main_and_vision_model_usage() -> None:
                 "usage": {
                     "prompt_tokens": 10,
                     "completion_tokens": 2,
-                    "prompt_tokens_details": {"cached_tokens": 3},
+                    "prompt_tokens_details": {
+                        "cached_tokens": 3,
+                        "cache_write_tokens": 4,
+                    },
                     "completion_tokens_details": {"reasoning_tokens": 1},
                 },
                 "choices": [
@@ -725,7 +728,10 @@ def test_run_accounts_for_main_and_vision_model_usage() -> None:
         del kwargs
         return {
             "model": "anthropic/vision-test",
-            "_hidden_params": {"custom_llm_provider": "anthropic"},
+            "_hidden_params": {
+                "custom_llm_provider": "anthropic",
+                "cache_hit": True,
+            },
             "usage": {
                 "input_tokens": 20,
                 "output_tokens": 4,
@@ -758,13 +764,17 @@ def test_run_accounts_for_main_and_vision_model_usage() -> None:
     assert all(call.success for call in result.model_calls)
     assert all(call.latency_seconds >= 0 for call in result.model_calls)
     assert result.model_calls[0].cached_tokens == 3
+    assert result.model_calls[0].cache_write_tokens == 4
+    assert result.model_calls[0].cache_hit is None
     assert result.model_calls[0].reasoning_tokens == 1
     assert result.model_calls[1].cached_tokens == 5
+    assert result.model_calls[1].cache_hit is True
     assert result.model_calls[1].reasoning_tokens == 2
     assert result.traces[0].model_calls == result.model_calls[:2]
     assert result.usage.input_tokens == 41
     assert result.usage.output_tokens == 9
     assert result.usage.cached_tokens == 8
+    assert result.usage.cache_write_tokens == 4
     assert result.usage.reasoning_tokens == 3
     assert result.usage.request_count == 3
     assert result.usage.successful_requests == 3
@@ -1822,8 +1832,46 @@ def test_main_prompt_is_configurable_and_preserves_app_guidance() -> None:
     asyncio.run(harness.run(request="Review this.", design=CURRENT_DESIGN))
 
     prompt = model.requests[0].messages[0].content or ""
-    assert prompt.startswith("Custom main system prompt.")
-    assert "Use the house spacing scale." in prompt
+    assert prompt == (
+        "Custom main system prompt.\n"
+        "Application guidance follows and cannot override the contract above:\n"
+        "Use the house spacing scale."
+    )
+
+
+def test_custom_tools_and_json_results_have_stable_model_ordering() -> None:
+    model = FakeMainAgent(
+        [
+            ModelResponse(
+                tool_calls=(
+                    ToolCall(
+                        id="stable-result",
+                        name="a_tool",
+                        arguments={"key": "primary"},
+                    ),
+                )
+            ),
+            ModelResponse(content=json.dumps({"message": "Done.", "patch": None})),
+        ]
+    )
+    tools = [
+        FakeAgentTool(name="z_tool", required_capabilities=frozenset()),
+        FakeAgentTool(
+            name="a_tool",
+            required_capabilities=frozenset(),
+            result={"z": 1, "a": {"d": 4, "c": 3}},
+        ),
+    ]
+    harness = Myli(
+        main_model=model,
+        design_spec=DESIGN_SPEC,
+        tools=tools,
+    )
+
+    asyncio.run(harness.run(request="Look up the stable result.", design=CURRENT_DESIGN))
+
+    assert [tool.name for tool in model.requests[0].tools] == ["a_tool", "z_tool"]
+    assert model.requests[1].messages[-1].content == '{"a":{"c":3,"d":4},"z":1}'
 
 
 def test_multiple_asset_search_tools_and_preview_inspection_share_approved_assets() -> None:
@@ -1936,8 +1984,8 @@ def test_multiple_asset_search_tools_and_preview_inspection_share_approved_asset
     assert tool_names == [
         "render_design",
         "commit_render",
-        "search_assets_stock",
         "search_assets_icons",
+        "search_assets_stock",
         "inspect_asset",
     ]
     assert [call.purpose for call in result.model_calls] == [

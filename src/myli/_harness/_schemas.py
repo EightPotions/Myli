@@ -63,7 +63,8 @@ class SchemaMixin:
                     },
                 )
             )
-        for tool_name, provider in self._search_providers.items():
+        for tool_name in sorted(self._search_providers):
+            provider = self._search_providers[tool_name]
             definitions.append(
                 ToolDefinition(
                     name=tool_name,
@@ -126,14 +127,15 @@ class SchemaMixin:
                     },
                 )
             )
-        definitions.extend(
-            ToolDefinition(
-                name=config.tool.name,
-                description=config.tool.description,
-                input_schema=config.input_schema,
+        for tool_name in sorted(self._tools):
+            config = self._tools[tool_name]
+            definitions.append(
+                ToolDefinition(
+                    name=config.tool.name,
+                    description=config.tool.description,
+                    input_schema=config.input_schema,
+                )
             )
-            for config in self._tools.values()
-        )
         return tuple(definitions)
 
     def _tool_definitions_for(

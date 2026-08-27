@@ -5,14 +5,13 @@ from __future__ import annotations
 import asyncio
 import copy
 import inspect
-import json
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 
 from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
 
-from .._json import first_json_difference, validate_json_value
+from .._json import canonical_json_dumps, first_json_difference, validate_json_value
 from ..contracts import (
     Allow,
     Defer,
@@ -386,12 +385,7 @@ class ToolExecutionMixin:
         return _CallExecution(
             outcome=outcome,
             failure_mode=failure_mode,
-            model_content=json.dumps(
-                model_value,
-                ensure_ascii=False,
-                separators=(",", ":"),
-                allow_nan=False,
-            ),
+            model_content=canonical_json_dumps(model_value),
         )
 
     def _retrieve_evidence(

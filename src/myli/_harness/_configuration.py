@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-import copy
 from collections.abc import Collection, Mapping, Sequence
 
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError
 
+from .._json import canonical_json_value
 from ..contracts import (
     AgentTool,
     AssetSearchProvider,
@@ -90,7 +90,7 @@ class ConfigurationMixin:
             try:
                 name = tool.name
                 description = tool.description
-                input_schema = copy.deepcopy(dict(tool.input_schema))
+                input_schema = canonical_json_value(tool.input_schema)
                 required_capabilities = tool.required_capabilities
                 max_calls_per_run = tool.max_calls_per_run
                 timeout_seconds = tool.timeout_seconds

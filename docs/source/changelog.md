@@ -5,6 +5,11 @@ the public contracts evolve.
 
 ## Unreleased
 
+- Model requests now canonicalize JSON Schema and tool-result object keys,
+  stabilize configurable tool ordering and system-instruction assembly, and sort
+  LiteLLM wire tools by name. LiteLLM cache-control injection points are accepted
+  directly or through model options. Provider-reported cache reads, writes, and
+  explicit hit state are exposed without inferring a hit from configuration.
 - `HarnessLimits` now offers optional aggregate provider-token and tool-result
   budgets plus generic guards for repeated canonical tool calls, identical
   candidates, and consecutive no-op renders. Crossing these controls stops the
@@ -15,7 +20,8 @@ the public contracts evolve.
   semantic equivalence.
 - Every main and internal vision request now produces a provider-neutral
   `ModelCallTrace` with its purpose, model/provider identity, latency, outcome,
-  retry count, and reported input, output, cached, and reasoning tokens.
+  retry count, and reported input, output, cached, cache-write, and reasoning
+  tokens. Explicit provider cache-hit state remains tri-state per call.
   `RunResult` exposes the ordered calls and aggregate `RunUsage`; each
   `StepTrace` includes the calls associated with that model step.
 - A synchronous `ModelContextPolicy` hook now runs before every main-model

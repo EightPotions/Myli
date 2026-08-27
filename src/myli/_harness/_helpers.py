@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import copy
-import json
 import math
 import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from .._json import validate_json_value
+from .._json import canonical_json_dumps, canonical_json_value, validate_json_value
 from ..contracts import Asset, FailureMode
 from ..errors import ConfigurationError, ToolExecutionError
 
@@ -90,14 +89,9 @@ def _coerce_failure_mode(value: Any, *, name: str) -> FailureMode:
 
 
 def _serialize_tool_result(value: Any) -> tuple[Any, int]:
-    validate_json_value(value)
-    content = json.dumps(
-        value,
-        ensure_ascii=False,
-        separators=(",", ":"),
-        allow_nan=False,
-    )
-    return copy.deepcopy(value), len(content.encode("utf-8"))
+    serialized = canonical_json_value(value)
+    content = canonical_json_dumps(serialized)
+    return serialized, len(content.encode("utf-8"))
 
 
 def _resolve_json_pointer(value: Any, pointer: str, *, max_depth: int) -> Any:
@@ -147,14 +141,7 @@ def _resolve_json_pointer(value: Any, pointer: str, *, max_depth: int) -> Any:
 
 
 def _canonical_json(value: Mapping[str, Any]) -> str:
-    validate_json_value(value)
-    return json.dumps(
-        value,
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-        allow_nan=False,
-    )
+    return canonical_json_dumps(value)
 
 
 def _same_asset(left: Asset, right: Asset) -> bool:

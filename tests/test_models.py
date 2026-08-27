@@ -134,6 +134,107 @@ def test_main_client_maps_messages_tools_schema_and_tool_response() -> None:
     assert response.reasoning_content == "I should search before editing."
 
 
+def test_main_client_constructs_semantically_equal_requests_identically() -> None:
+    calls = []
+
+    async def completion(**kwargs):
+        calls.append(kwargs)
+        return {"choices": [{"message": {"content": '{"message":"Done.","patch":null}'}}]}
+
+    def request(*, reverse: bool) -> ModelRequest:
+        schema_items = [
+            ("type", "object"),
+            ("properties", {"z": {"type": "number"}, "a": {"type": "string"}}),
+            ("required", ["a"]),
+        ]
+        if reverse:
+            schema_items.reverse()
+        tools = [
+            ToolDefinition("z_tool", "Z tool", dict(schema_items)),
+            ToolDefinition("a_tool", "A tool", dict(reversed(schema_items))),
+        ]
+        if reverse:
+            tools.reverse()
+        return ModelRequest(
+            messages=(
+                Message(role="system", content="Stable system instructions."),
+                Message(
+                    role="assistant",
+                    tool_calls=(ToolCall("call-1", "a_tool", {"z": 1, "a": 2}),),
+                ),
+                Message(role="tool", content='{"z":1,"a":{"d":4,"c":3}}', tool_call_id="call-1"),
+            ),
+            tools=tuple(tools),
+            output_schema=dict(schema_items),
+        )
+
+    client = LiteLLMMainModel(model="provider/test", completion=completion)
+    asyncio.run(client.complete(request(reverse=False)))
+    asyncio.run(client.complete(request(reverse=True)))
+
+    assert calls[0] == calls[1]
+    assert [tool["function"]["name"] for tool in calls[0]["tools"]] == ["a_tool", "z_tool"]
+    assert calls[0]["messages"][1]["tool_calls"][0]["function"]["arguments"] == '{"a":2,"z":1}'
+    assert calls[0]["messages"][2]["content"] == '{"a":{"c":3,"d":4},"z":1}'
+    assert list(calls[0]["response_format"]["json_schema"]["schema"]) == ["properties", "required", "type"]
+
+
+def test_litellm_cache_controls_and_provider_reported_usage_are_exposed() -> None:
+    calls = []
+    responses = iter(
+        [
+            {
+                "_hidden_params": {"cache_hit": True},
+                "usage": {
+                    "prompt_tokens": 20,
+                    "prompt_tokens_details": {
+                        "cached_tokens": 8,
+                        "cache_write_tokens": 5,
+                    },
+                },
+                "choices": [{"message": {"content": '{"message":"Cached.","patch":null}'}}],
+            },
+            {
+                "usage": {
+                    "prompt_tokens": 20,
+                    "prompt_tokens_details": {"cached_tokens": 7},
+                },
+                "choices": [{"message": {"content": '{"message":"Unknown.","patch":null}'}}],
+            },
+        ]
+    )
+
+    async def completion(**kwargs):
+        calls.append(kwargs)
+        return next(responses)
+
+    client = LiteLLMMainModel(
+        model="anthropic/test",
+        cache_control_injection_points=(
+            {"role": "system", "location": "message"},
+            {"location": "tool_config"},
+        ),
+        completion=completion,
+    )
+    reported = asyncio.run(client.complete(model_request()))
+    unreported = asyncio.run(client.complete(model_request()))
+
+    expected_controls = [
+        {"location": "message", "role": "system"},
+        {"location": "tool_config"},
+    ]
+    assert calls[0]["cache_control_injection_points"] == expected_controls
+    assert calls[1]["cache_control_injection_points"] == expected_controls
+    assert reported.metadata["cache_hit"] is True
+    assert reported.metadata["cache_usage"] == {
+        "read_input_tokens": 8,
+        "write_input_tokens": 5,
+        "cache_hit": True,
+    }
+    assert "cache_hit" not in unreported.metadata
+    assert unreported.metadata["cache_usage"] == {"read_input_tokens": 7}
+
+
 def test_main_client_supports_json_and_text_modes() -> None:
     calls = []
 
@@ -435,7 +536,12 @@ def test_myli_constructor_builds_model_clients_from_generic_settings() -> None:
         api_key="main-secret",
         vision_base_url="https://vision.example.test/v1",
         vision_api_key="vision-secret",
-        model_options={"temperature": 0.1},
+        model_options={
+            "temperature": 0.1,
+            "cache_control_injection_points": [
+                {"role": "system", "location": "message"},
+            ],
+        },
         vision_options={"max_tokens": 300},
         main_prompt="Custom main prompt.",
         vision_prompt="Custom vision prompt.",
@@ -449,7 +555,13 @@ def test_myli_constructor_builds_model_clients_from_generic_settings() -> None:
     assert not hasattr(harness, "vision_agent")
     assert harness.main_model.model == "openai/main-test"
     assert harness.main_model.base_url == "https://main.example.test/v1"
-    assert harness.main_model.options == {"temperature": 0.1}
+    assert harness.main_model.options == {
+        "temperature": 0.1,
+        "cache_control_injection_points": [
+            {"location": "message", "role": "system"},
+        ],
+    }
+    assert harness.main_model.cache_control_injection_points == ({"location": "message", "role": "system"},)
     assert harness.vision_model.model == "openai/vision-test"
     assert harness.vision_model.base_url == "https://vision.example.test/v1"
     assert harness.vision_model.options == {"max_tokens": 300}

@@ -22,6 +22,24 @@ def validate_json_value(value: Any, *, path: str = "$") -> None:
     _validate_json_value(value, path=path, ancestors=set())
 
 
+def canonical_json_value(value: Any) -> Any:
+    """Return an isolated JSON value with every object ordered by key."""
+
+    validate_json_value(value)
+    return _canonical_json_value(value)
+
+
+def canonical_json_dumps(value: Any) -> str:
+    """Serialize strict JSON with stable object ordering and no whitespace."""
+
+    return json.dumps(
+        canonical_json_value(value),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+
+
 def first_json_difference(left: Any, right: Any, *, pointer: str = "") -> str | None:
     """Return the first RFC 6901 pointer where two JSON values differ."""
 
@@ -115,6 +133,14 @@ def _validate_json_value(
 
 def _reject_non_finite_constant(value: str) -> NoReturn:
     raise ValueError(f"Non-finite number {value} is not valid JSON.")
+
+
+def _canonical_json_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {key: _canonical_json_value(value[key]) for key in sorted(value)}
+    if isinstance(value, list):
+        return [_canonical_json_value(item) for item in value]
+    return value
 
 
 def _pointer_token(value: str) -> str:

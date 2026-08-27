@@ -5,6 +5,8 @@ the public contracts evolve.
 
 ## Unreleased
 
+## 0.3.0
+
 - Model requests now canonicalize JSON Schema and tool-result object keys,
   stabilize configurable tool ordering and system-instruction assembly, and sort
   LiteLLM wire tools by name. LiteLLM cache-control injection points are accepted

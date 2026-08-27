@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import unittest
+import pytest
 
 from myli import JsonPatchError, apply_json_patch
 
@@ -71,13 +71,13 @@ def test_unrecognized_operation_members_are_ignored_per_rfc_6902() -> None:
 
 
 def test_failed_test_and_invalid_array_indexes_are_rejected() -> None:
-    with unittest.TestCase().assertRaisesRegex(JsonPatchError, "test did not match"):
+    with pytest.raises(JsonPatchError, match="test did not match"):
         apply_json_patch(
             {"enabled": True},
             [{"op": "test", "path": "/enabled", "value": 1}],
         )
 
-    with unittest.TestCase().assertRaisesRegex(JsonPatchError, "array index '01'"):
+    with pytest.raises(JsonPatchError, match="array index '01'"):
         apply_json_patch(
             {"items": ["a"]},
             [{"op": "remove", "path": "/items/01"}],
@@ -85,18 +85,8 @@ def test_failed_test_and_invalid_array_indexes_are_rejected() -> None:
 
 
 def test_move_cannot_target_its_own_child() -> None:
-    with unittest.TestCase().assertRaisesRegex(JsonPatchError, "cannot be a child"):
+    with pytest.raises(JsonPatchError, match="cannot be a child"):
         apply_json_patch(
             {"node": {"child": {}}},
             [{"op": "move", "from": "/node", "path": "/node/child/moved"}],
         )
-
-
-def load_tests(loader, standard_tests, pattern):
-    """Expose the dependency-free function tests to ``unittest`` discovery."""
-
-    del loader, pattern
-    for name, value in sorted(globals().items()):
-        if name.startswith("test_") and callable(value):
-            standard_tests.addTest(unittest.FunctionTestCase(value, description=name))
-    return standard_tests

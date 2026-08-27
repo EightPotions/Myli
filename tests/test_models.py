@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
-import unittest
+
+import pytest
 
 from myli import (
     DesignSpec,
@@ -291,7 +292,7 @@ def test_main_client_rejects_invalid_tool_argument_json() -> None:
 
     client = LiteLLMMainModel(model="openai/test", completion=completion)
 
-    with unittest.TestCase().assertRaisesRegex(ModelProtocolError, "invalid JSON arguments"):
+    with pytest.raises(ModelProtocolError, match="invalid JSON arguments"):
         asyncio.run(client.complete(model_request()))
 
 
@@ -309,9 +310,9 @@ def test_main_client_normalizes_unexpected_response_parsing_failures() -> None:
 
     client = LiteLLMMainModel(model="provider/test", completion=completion)
 
-    with unittest.TestCase().assertRaisesRegex(ModelProtocolError, "could not be normalized") as raised:
+    with pytest.raises(ModelProtocolError, match="could not be normalized") as raised:
         asyncio.run(client.complete(model_request()))
-    assert raised.exception.__cause__ is source_error
+    assert raised.value.__cause__ is source_error
 
 
 def test_model_client_translates_provider_failures_to_stable_errors() -> None:
@@ -324,8 +325,6 @@ def test_model_client_translates_provider_failures_to_stable_errors() -> None:
         (RateLimitFailure("retry later"), ProviderRateLimitError),
         (ValueError("provider rejected request"), ProviderError),
     )
-    test_case = unittest.TestCase()
-
     for source_error, expected_type in cases:
 
         async def completion(_error=source_error, **kwargs):
@@ -333,10 +332,9 @@ def test_model_client_translates_provider_failures_to_stable_errors() -> None:
             raise _error
 
         client = LiteLLMMainModel(model="provider/test", completion=completion)
-        with test_case.subTest(expected_type=expected_type.__name__):
-            with test_case.assertRaises(expected_type) as raised:
-                asyncio.run(client.complete(model_request()))
-            assert raised.exception.__cause__ is source_error
+        with pytest.raises(expected_type) as raised:
+            asyncio.run(client.complete(model_request()))
+        assert raised.value.__cause__ is source_error
 
 
 def test_model_client_does_not_rewrap_stable_myli_errors() -> None:
@@ -348,9 +346,9 @@ def test_model_client_does_not_rewrap_stable_myli_errors() -> None:
 
     client = LiteLLMMainModel(model="provider/test", completion=completion)
 
-    with unittest.TestCase().assertRaises(ProviderRateLimitError) as raised:
+    with pytest.raises(ProviderRateLimitError) as raised:
         asyncio.run(client.complete(model_request()))
-    assert raised.exception is source_error
+    assert raised.value is source_error
 
 
 def test_vision_client_sends_an_in_memory_data_url() -> None:
@@ -511,9 +509,9 @@ def test_vision_client_rejects_structured_output_that_misses_required_evidence()
         },
     )
 
-    with unittest.TestCase().assertRaisesRegex(
+    with pytest.raises(
         ModelProtocolError,
-        "requested JSON schema",
+        match="requested JSON schema",
     ):
         asyncio.run(vision.review(request))
 
@@ -590,13 +588,3 @@ def test_myli_reuses_main_model_endpoint_for_vision_by_default() -> None:
     assert isinstance(harness.vision_model, LiteLLMVisionModel)
     assert harness.vision_model.model == "ollama/llava"
     assert harness.vision_model.base_url == "http://localhost:11434"
-
-
-def load_tests(loader, standard_tests, pattern):
-    """Expose the dependency-free function tests to ``unittest`` discovery."""
-
-    del loader, pattern
-    for name, value in sorted(globals().items()):
-        if name.startswith("test_") and callable(value):
-            standard_tests.addTest(unittest.FunctionTestCase(value, description=name))
-    return standard_tests

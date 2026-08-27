@@ -2,7 +2,6 @@
 
 import importlib.metadata
 import inspect
-import unittest
 
 import myli
 
@@ -62,13 +61,3 @@ def test_stable_exception_taxonomy_is_public() -> None:
     assert issubclass(myli.ToolExecutionError, myli.MyliError)
     assert issubclass(myli.DesignValidationError, myli.MyliError)
     assert issubclass(myli.RunLimitExceeded, myli.MyliError)
-
-
-def load_tests(loader, standard_tests, pattern):
-    """Expose the dependency-free function tests to ``unittest`` discovery."""
-
-    del loader, pattern
-    for name, value in sorted(globals().items()):
-        if name.startswith("test_") and callable(value):
-            standard_tests.addTest(unittest.FunctionTestCase(value, description=name))
-    return standard_tests

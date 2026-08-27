@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import json
-import unittest
 from collections.abc import Mapping
 from typing import Any
+
+import pytest
 
 from myli import (
     Allow,
@@ -96,9 +97,9 @@ def test_candidate_round_trip_error_reports_escaped_json_pointer() -> None:
         serializer=lambda value: value,
     )
 
-    with unittest.TestCase().assertRaisesRegex(
+    with pytest.raises(
         ValueError,
-        r"JSON Pointer '/sections/0/a~1b/~0label'",
+        match=r"JSON Pointer '/sections/0/a~1b/~0label'",
     ):
         spec.validate_candidate(
             {"sections": [{"a/b": {"~label": "model value"}}]},
@@ -182,13 +183,3 @@ def test_retry_prompt_carries_all_successive_validation_failures() -> None:
     assert "contain exactly message and patch" in second_retry
     assert "Editing is disabled; patch must be null" in second_retry
     assert second_retry.index("contain exactly message and patch") < second_retry.index("Editing is disabled")
-
-
-def load_tests(loader, standard_tests, pattern):
-    """Expose the dependency-free function tests to ``unittest`` discovery."""
-
-    del loader, pattern
-    for name, value in sorted(globals().items()):
-        if name.startswith("test_") and callable(value):
-            standard_tests.addTest(unittest.FunctionTestCase(value, description=name))
-    return standard_tests

@@ -27,7 +27,7 @@ The package test suite uses offline model doubles and does not call external
 services:
 
 ```console
-$ python -m unittest discover -s tests -v
+$ uv run pytest
 ```
 
 ## Build the documentation

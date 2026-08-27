@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import json
-import unittest
 from collections.abc import Callable
 from dataclasses import replace
 from typing import Any
+
+import pytest
 
 from myli import (
     Asset,
@@ -336,9 +337,8 @@ def test_generic_stagnation_and_budget_limits_are_optional_positive_integers() -
 
     assert all(getattr(limits, name) is None for name in names)
     for name in names:
-        with unittest.TestCase().subTest(name=name):
-            with unittest.TestCase().assertRaisesRegex(ValueError, "positive integer or None"):
-                HarnessLimits(**{name: 0})
+        with pytest.raises(ValueError, match="positive integer or None"):
+            HarnessLimits(**{name: 0})
 
 
 def test_total_provider_token_budget_stops_the_run() -> None:
@@ -360,7 +360,7 @@ def test_total_provider_token_budget_stops_the_run() -> None:
         limits=HarnessLimits(max_total_provider_tokens=10),
     )
 
-    with unittest.TestCase().assertRaisesRegex(RunLimitExceeded, "provider token budget"):
+    with pytest.raises(RunLimitExceeded, match="provider token budget"):
         asyncio.run(harness.run(request="Keep trying.", design=CURRENT_DESIGN))
 
     assert len(model.requests) == 2
@@ -389,7 +389,7 @@ def test_total_tool_result_budget_accumulates_across_tools() -> None:
         limits=HarnessLimits(max_total_tool_result_bytes=10),
     )
 
-    with unittest.TestCase().assertRaisesRegex(RunLimitExceeded, "tool result budget"):
+    with pytest.raises(RunLimitExceeded, match="tool result budget"):
         asyncio.run(harness.run(request="Look up both colors.", design=CURRENT_DESIGN))
 
     assert tool.calls == [{"key": "primary"}, {"key": "secondary"}]
@@ -439,7 +439,7 @@ def test_repeated_tool_calls_use_canonical_arguments() -> None:
         limits=HarnessLimits(max_repeated_tool_calls=1),
     )
 
-    with unittest.TestCase().assertRaisesRegex(RunLimitExceeded, "repeated tool call limit"):
+    with pytest.raises(RunLimitExceeded, match="repeated tool call limit"):
         asyncio.run(harness.run(request="Repeat the lookup.", design=CURRENT_DESIGN))
 
     assert tool.calls == [{"key": "primary", "scope": "global"}]
@@ -470,7 +470,7 @@ def test_identical_render_candidates_stop_before_rendering_again() -> None:
         limits=HarnessLimits(max_identical_candidates=1),
     )
 
-    with unittest.TestCase().assertRaisesRegex(RunLimitExceeded, "identical candidate limit"):
+    with pytest.raises(RunLimitExceeded, match="identical candidate limit"):
         asyncio.run(
             harness.run(
                 request="Render the same candidate twice.",
@@ -503,7 +503,7 @@ def test_consecutive_noop_render_limit_resets_after_progress() -> None:
         limits=HarnessLimits(max_renders=4, max_consecutive_noop_renders=1),
     )
 
-    with unittest.TestCase().assertRaisesRegex(RunLimitExceeded, "no-op render limit"):
+    with pytest.raises(RunLimitExceeded, match="no-op render limit"):
         asyncio.run(
             harness.run(
                 request="Stop if rendering stops making progress.",
@@ -577,9 +577,9 @@ def test_model_protocol_retry_budget_is_bounded() -> None:
         limits=HarnessLimits(max_model_response_retries=1),
     )
 
-    with unittest.TestCase().assertRaisesRegex(
+    with pytest.raises(
         ModelProtocolError,
-        "exhausted the model-response retry budget",
+        match="exhausted the model-response retry budget",
     ):
         asyncio.run(harness.run(request="Inspect the design.", design=CURRENT_DESIGN))
 
@@ -1812,10 +1812,10 @@ def test_custom_agent_tool_failure_raises_stable_execution_error() -> None:
         tool_failure_modes={"lookup_brand": FailureMode.RAISE},
     )
 
-    with unittest.TestCase().assertRaisesRegex(ToolExecutionError, "Tool lookup_brand failed") as raised:
+    with pytest.raises(ToolExecutionError, match="Tool lookup_brand failed") as raised:
         asyncio.run(harness.run(request="Look it up.", design=CURRENT_DESIGN))
 
-    assert raised.exception.__cause__ is source_error
+    assert raised.value.__cause__ is source_error
 
 
 def test_main_prompt_is_configurable_and_preserves_app_guidance() -> None:
@@ -2212,7 +2212,7 @@ def test_candidate_policy_can_reject_an_unsearched_asset() -> None:
         limits=HarnessLimits(max_validation_retries=0),
     )
 
-    with unittest.TestCase().assertRaises(ModelProtocolError) as error:
+    with pytest.raises(ModelProtocolError) as error:
         asyncio.run(
             harness.run(
                 request="Add an image.",
@@ -2221,8 +2221,8 @@ def test_candidate_policy_can_reject_an_unsearched_asset() -> None:
             )
         )
 
-    assert "validation retry budget" in str(error.exception)
-    assert "unapproved image asset" in str(error.exception.__cause__)
+    assert "validation retry budget" in str(error.value)
+    assert "unapproved image asset" in str(error.value.__cause__)
 
 
 def test_patch_schemas_do_not_embed_the_complete_design_schema() -> None:
@@ -2312,7 +2312,7 @@ def test_prompt_schema_is_model_only_while_full_schema_remains_authoritative() -
         limits=HarnessLimits(max_validation_retries=0),
     )
 
-    with unittest.TestCase().assertRaisesRegex(ModelProtocolError, "validation retry budget"):
+    with pytest.raises(ModelProtocolError, match="validation retry budget"):
         asyncio.run(
             harness.run(
                 request="Review the title.",
@@ -2346,7 +2346,7 @@ def test_prompt_schema_is_an_explicit_validated_opt_in() -> None:
         serializer=lambda value: value,
     ).effective_prompt_schema == {"type": "object"}
 
-    with unittest.TestCase().assertRaisesRegex(ValueError, "DesignSpec.prompt_schema is invalid"):
+    with pytest.raises(ValueError, match="DesignSpec.prompt_schema is invalid"):
         DesignSpec(
             name="invalid prompt schema",
             schema={"type": "object"},
@@ -2495,7 +2495,7 @@ def test_history_accepts_only_plain_user_and_assistant_messages() -> None:
         renderer=FakeRenderer(),
     )
 
-    with unittest.TestCase().assertRaisesRegex(ConfigurationError, "history may contain only"):
+    with pytest.raises(ConfigurationError, match="history may contain only"):
         asyncio.run(
             harness.run(
                 request="Review this.",
@@ -2612,7 +2612,7 @@ def test_model_context_policy_cannot_split_tool_call_result_pairs() -> None:
         model_context_policy=DropLatestMessagePolicy(),
     )
 
-    with unittest.TestCase().assertRaisesRegex(ConfigurationError, "required tool results"):
+    with pytest.raises(ConfigurationError, match="required tool results"):
         asyncio.run(
             harness.run(
                 request="Check the primary brand color.",
@@ -2631,13 +2631,3 @@ def test_default_model_context_policy_is_safe_and_public() -> None:
     )
 
     assert isinstance(harness.model_context_policy, DefaultModelContextPolicy)
-
-
-def load_tests(loader, standard_tests, pattern):
-    """Expose the dependency-free function tests to ``unittest`` discovery."""
-
-    del loader, pattern
-    for name, value in sorted(globals().items()):
-        if name.startswith("test_") and callable(value):
-            standard_tests.addTest(unittest.FunctionTestCase(value, description=name))
-    return standard_tests

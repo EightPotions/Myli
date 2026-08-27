@@ -236,7 +236,7 @@ concurrent requests.
 uv sync
 uv run ruff format --check .
 uv run ruff check .
-python -m unittest discover -s tests -v
+uv run pytest
 ~~~
 
 Myli is distributed under the MIT License.

@@ -408,6 +408,8 @@ class RuntimeMixin:
             source=source,
             pinned_indexes=pinned_indexes,
         )
+        if self._compact_render_context and prepared_messages != source:
+            state.compacted_render_context = True
         return copy.deepcopy(prepared_messages)
 
     @classmethod

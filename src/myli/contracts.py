@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import math
 from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -263,15 +264,109 @@ class ModelContextPolicy(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class DefaultModelContextPolicy:
-    """Safe default policy that preserves the complete message sequence."""
+    """Compact superseded render evidence after several main-model calls.
+
+    The newest successful render, render failures, non-render tool exchanges, and
+    renders containing unresolved high-severity findings remain complete. Older
+    successful renders become small evidence references while retaining valid
+    assistant/tool message groups.
+    """
+
+    compact_after_model_calls: int = 3
+
+    def __post_init__(self) -> None:
+        value = self.compact_after_model_calls
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError("compact_after_model_calls must be a positive integer.")
 
     def prepare(
         self,
         messages: Sequence[Message],
         context: ModelContext,
     ) -> Sequence[Message]:
-        del context
-        return tuple(messages)
+        source = tuple(messages)
+        if context.step < self.compact_after_model_calls:
+            return source
+
+        render_outcomes = tuple(
+            outcome
+            for outcome in context.tool_outcomes
+            if outcome.tool_name == "render_design"
+            and outcome.succeeded
+            and outcome.evidence_ref is not None
+            and isinstance(outcome.result, Mapping)
+            and isinstance(outcome.result.get("render_ref"), str)
+        )
+        if len(render_outcomes) < 2:
+            return source
+
+        compacted: dict[str, tuple[str, str]] = {}
+        for outcome in render_outcomes[:-1]:
+            if _contains_unresolved_high_severity(outcome.result.get("visual_review")):
+                continue
+            compacted[outcome.call_id] = (
+                outcome.result["render_ref"],
+                outcome.evidence_ref,
+            )
+        if not compacted:
+            return source
+
+        prepared: list[Message] = []
+        for message in source:
+            if message.role == "assistant" and message.tool_calls:
+                calls = tuple(
+                    replace(
+                        call,
+                        arguments={"evidence_ref": compacted[call.id][1]},
+                    )
+                    if call.id in compacted
+                    else call
+                    for call in message.tool_calls
+                )
+                prepared.append(replace(message, tool_calls=calls))
+                continue
+            if message.role == "tool" and message.tool_call_id in compacted:
+                render_ref, evidence_ref = compacted[message.tool_call_id]
+                prepared.append(
+                    replace(
+                        message,
+                        content=canonical_json_dumps(
+                            {
+                                "tool": "render_design",
+                                "render_ref": render_ref,
+                                "status": "superseded",
+                                "evidence_ref": evidence_ref,
+                            }
+                        ),
+                    )
+                )
+                continue
+            prepared.append(message)
+        return tuple(prepared)
+
+
+def _contains_unresolved_high_severity(value: Any) -> bool:
+    """Conservatively identify structured, unresolved high-severity findings."""
+
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (TypeError, ValueError):
+            return False
+    if isinstance(value, Mapping):
+        if value.get("ready_to_commit") is True:
+            return False
+        severity = value.get("severity")
+        status = value.get("status")
+        is_resolved = value.get("resolved") is True or (
+            isinstance(status, str) and status.strip().lower() in {"closed", "dismissed", "fixed", "resolved"}
+        )
+        if isinstance(severity, str) and severity.strip().lower() == "high" and not is_resolved:
+            return True
+        return any(_contains_unresolved_high_severity(item) for item in value.values())
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        return any(_contains_unresolved_high_severity(item) for item in value)
+    return False
 
 
 @runtime_checkable

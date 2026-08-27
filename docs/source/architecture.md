@@ -31,10 +31,13 @@ custom transports, or different providers. LiteLLM is the default integration
 and supports separate main and vision configuration.
 
 A `ModelContextPolicy` prepares an isolated message view immediately before each
-main-model completion. Its default implementation preserves all messages.
-Application policies may select or summarize older context using run metadata
-and tool outcomes, while Myli keeps the original run history and enforces pinned
-prompts plus complete, uniquely identified assistant tool-call/result groups.
+main-model completion. After three completed main-model calls, its default
+implementation compacts superseded successful render exchanges while retaining
+the latest review, candidate references, unresolved high-severity findings, tool
+errors, and authorization evidence. Application policies may select or summarize
+context using run metadata and tool outcomes, while Myli keeps the original run
+history and enforces pinned prompts plus complete, uniquely identified assistant
+tool-call/result groups.
 
 VisionModel receives a VisualReviewRequest containing one or more labeled images,
 the review prompt, optional system guidance, detail hints, and an optional JSON
@@ -62,6 +65,11 @@ view. The built-in `retrieve_evidence` tool resolves only references from the
 active run. It can return the complete result or an RFC 6901 subtree selected by
 `json_pointer`, subject to pointer-length, pointer-depth, response-size, and
 per-run call limits.
+
+Successful renders are also registered as evidence when the default context policy
+is active. A superseded render's compact model view contains its `render_ref` and
+`evidence_ref`; retrieval returns the original render tool arguments and complete
+visual-review result without rebilling that data on every later model step.
 
 ToolMiddleware sits around every built-in and application tool. It can allow,
 reject, or defer work and can observe the resulting outcome. This supports

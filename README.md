@@ -101,10 +101,14 @@ the base system contract always precedes application guidance. Array order and
 conversation order are preserved because they may be semantically meaningful.
 
 Before every `MainModel.complete` call, Myli runs an injectable
-`ModelContextPolicy`. Its safe default preserves the complete context. Custom
-policies can compact or relevance-rank older messages using the run and evidence
-metadata in `ModelContext`; pinned system/current-run prompts and complete
-assistant tool-call/result groups are enforced before provider dispatch.
+`ModelContextPolicy`. After three completed main-model calls, its default compacts
+superseded successful renders while keeping the latest render review, current
+candidate references, unresolved high-severity findings, tool errors, and
+authorization evidence. Compact records retain run-scoped `evidence_ref` values,
+so the bounded `retrieve_evidence` tool can restore the complete original render
+call and result. Custom policies can select or relevance-rank messages using the
+run and evidence metadata in `ModelContext`; pinned system/current-run prompts and
+complete assistant tool-call/result groups are enforced before provider dispatch.
 
 Vision calls use `VisualReviewRequest`, which keeps labels and ordering explicit
 for one or more images and can request output with an application-owned JSON

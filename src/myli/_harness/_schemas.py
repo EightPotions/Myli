@@ -103,12 +103,12 @@ class SchemaMixin:
                     },
                 )
             )
-        if any(config.model_view is not None for config in self._tools.values()):
+        if self._compact_render_context or any(config.model_view is not None for config in self._tools.values()):
             definitions.append(
                 ToolDefinition(
                     name=RETRIEVE_EVIDENCE_TOOL_NAME,
                     description=(
-                        "Retrieve omitted data from a projected custom-tool result. Use only "
+                        "Retrieve omitted data from compacted or projected tool evidence. Use only "
                         "an exact evidence_ref returned in this run. Omit json_pointer to "
                         "retrieve the complete result, or provide an RFC 6901 JSON Pointer "
                         "to retrieve one bounded subtree."
@@ -149,7 +149,14 @@ class SchemaMixin:
                 input_schema=copy.deepcopy(dict(definition.input_schema)),
             )
             for definition in self._tool_definitions
-            if (definition.name != RETRIEVE_EVIDENCE_TOOL_NAME or state.evidence_count > 0)
+            if (
+                definition.name != RETRIEVE_EVIDENCE_TOOL_NAME
+                or state.compacted_render_context
+                or any(
+                    outcome.evidence_ref is not None and outcome.tool_name != RENDER_TOOL_NAME
+                    for outcome in state.outcomes
+                )
+            )
             and (
                 definition.name not in self._tools
                 or self._tools[definition.name].required_capabilities.issubset(state.capabilities)

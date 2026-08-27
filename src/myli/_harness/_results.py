@@ -426,6 +426,7 @@ class ResultMixin:
         result: Any | None = None,
         message: str | None = None,
         result_size_bytes: int | None = None,
+        evidence_ref: str | None = None,
     ) -> ToolOutcome:
         return ToolOutcome(
             run_id=state.run_id,
@@ -436,7 +437,19 @@ class ResultMixin:
             result=copy.deepcopy(result),
             message=message,
             result_size_bytes=result_size_bytes,
+            evidence_ref=evidence_ref,
         )
+
+    @staticmethod
+    def _register_evidence(
+        state: _RunState[TDesign],
+        value: Any,
+    ) -> str:
+        validate_json_value(value)
+        reference = f"{state.run_id}:evidence:{state.evidence_count + 1}"
+        state.evidence_count += 1
+        state.evidence[reference] = copy.deepcopy(value)
+        return reference
 
     def _call_success(
         self,
@@ -444,8 +457,20 @@ class ResultMixin:
         call: ToolCall,
         failure_mode: FailureMode,
         result: Any,
+        *,
+        retain_context_evidence: bool = False,
     ) -> _CallExecution:
         serialized, size = _serialize_tool_result(result)
+        evidence_ref = None
+        if retain_context_evidence:
+            evidence_ref = self._register_evidence(
+                state,
+                {
+                    "tool": call.name,
+                    "arguments": copy.deepcopy(dict(call.arguments)),
+                    "result": serialized,
+                },
+            )
         return _CallExecution(
             outcome=self._outcome(
                 state,
@@ -453,6 +478,7 @@ class ResultMixin:
                 status="succeeded",
                 result=serialized,
                 result_size_bytes=size,
+                evidence_ref=evidence_ref,
             ),
             failure_mode=failure_mode,
         )

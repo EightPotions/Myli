@@ -71,7 +71,7 @@ class ConfigurationMixin:
             available.update({RENDER_TOOL_NAME, COMMIT_RENDER_TOOL_NAME})
         if self._search_providers and self.vision_model is not None:
             available.add(INSPECT_ASSET_TOOL_NAME)
-        if any(config.model_view is not None for config in self._tools.values()):
+        if self._compact_render_context or any(config.model_view is not None for config in self._tools.values()):
             available.add(RETRIEVE_EVIDENCE_TOOL_NAME)
         unknown = sorted(set(self._failure_modes).difference(available))
         if unknown:

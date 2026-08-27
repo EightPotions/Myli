@@ -176,6 +176,8 @@ class _RunState(Generic[TDesign]):
     inspection_calls: int = 0
     evidence_count: int = 0
     evidence_retrievals: int = 0
+    evidence: dict[str, Any] = field(default_factory=dict)
+    compacted_render_context: bool = False
     render_proposals: dict[str, _RenderProposal] = field(default_factory=dict)
     committed_render: _RenderProposal | None = None
     model_calls: list[ModelCallTrace] = field(default_factory=list)

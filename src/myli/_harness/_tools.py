@@ -215,8 +215,8 @@ class ToolExecutionMixin:
             return self._commit_render(call, state, failure_mode)
         if call.name == INSPECT_ASSET_TOOL_NAME and self._search_providers and self.vision_model is not None:
             return await self._inspect_asset(call, state, failure_mode, context)
-        if call.name == RETRIEVE_EVIDENCE_TOOL_NAME and any(
-            config.model_view is not None for config in self._tools.values()
+        if call.name == RETRIEVE_EVIDENCE_TOOL_NAME and (
+            self._compact_render_context or any(config.model_view is not None for config in self._tools.values())
         ):
             return self._retrieve_evidence(call, state, failure_mode)
         provider = self._search_providers.get(call.name)
@@ -380,7 +380,9 @@ class ToolExecutionMixin:
                 cause=exc,
             )
         if evidence_ref is not None:
-            state.evidence_count += 1
+            registered_reference = self._register_evidence(state, serialized)
+            if registered_reference != evidence_ref:
+                raise RuntimeError("Evidence references must be allocated in order.")
             outcome = replace(outcome, evidence_ref=evidence_ref)
         return _CallExecution(
             outcome=outcome,
@@ -412,19 +414,15 @@ class ToolExecutionMixin:
                 status="rejected",
                 message="retrieve_evidence evidence_ref must be non-empty text.",
             )
-        source_outcome = next(
-            (outcome for outcome in state.outcomes if outcome.succeeded and outcome.evidence_ref == reference),
-            None,
-        )
-        if source_outcome is None:
+        if reference not in state.evidence:
             return self._call_error(
                 state,
                 call,
                 failure_mode,
                 status="rejected",
-                message="The evidence_ref does not identify projected evidence from this run.",
+                message="The evidence_ref does not identify retained evidence from this run.",
             )
-        source = source_outcome.result
+        source = state.evidence[reference]
         pointer = call.arguments.get("json_pointer", "")
         if not isinstance(pointer, str) or len(pointer) > self.limits.max_evidence_pointer_chars:
             return self._call_error(

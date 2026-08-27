@@ -5,6 +5,13 @@ the public contracts evolve.
 
 ## Unreleased
 
+## 0.3.1
+
+- The default `ModelContextPolicy` now compacts superseded render patches and
+  reviews after three completed calls into retrievable evidence references while
+  retaining the latest render, current candidate references, unresolved
+  high-severity findings, tool errors, and authorization evidence.
+
 ## 0.3.0
 
 - Model requests now canonicalize JSON Schema and tool-result object keys,

@@ -168,6 +168,14 @@ class Myli(
         self.model_context_policy = (
             DefaultModelContextPolicy() if model_context_policy is None else model_context_policy
         )
+        self._compact_render_context = (
+            isinstance(
+                self.model_context_policy,
+                DefaultModelContextPolicy,
+            )
+            and self.renderer is not None
+            and self.vision_model is not None
+        )
         self.trace_redactor = trace_redactor
         self.parallel_tool_calls = bool(parallel_tool_calls)
         self.middleware = tuple(middleware)

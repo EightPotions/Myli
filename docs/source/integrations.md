@@ -68,9 +68,12 @@ explicit boolean.
 ### Model-context policy
 
 Myli calls a synchronous {py:class}`~myli.ModelContextPolicy` immediately before
-every `MainModel.complete` call. The default policy preserves the complete
-message sequence. Applications can inject a policy to compact older exchanges,
-apply a token budget, or rank context with application-specific relevance:
+every `MainModel.complete` call. Through the first three calls, the default policy
+preserves the complete message sequence. Later calls replace superseded successful
+render arguments and reviews with compact `render_ref`/`evidence_ref` records. The
+latest render remains complete, as do unresolved high-severity findings, tool
+errors, commits, and all non-render evidence. Applications can inject a policy to
+apply a different token budget or rank context with application-specific relevance:
 
 ```python
 class ApplicationContextPolicy:
@@ -92,6 +95,11 @@ keep every pinned message and complete assistant tool-call/result group. Myli
 rejects orphaned, partial, or duplicate tool exchanges before calling a
 provider. This lets relevance policies retain errors and recent evidence without
 creating provider-invalid request histories.
+
+The default compaction threshold is configurable with
+`DefaultModelContextPolicy(compact_after_model_calls=...)`. A compact render's
+`evidence_ref` resolves to an object containing the original tool name, arguments,
+and complete result through `retrieve_evidence`.
 
 ## Rendering
 

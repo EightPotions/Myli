@@ -2631,3 +2631,212 @@ def test_default_model_context_policy_is_safe_and_public() -> None:
     )
 
     assert isinstance(harness.model_context_policy, DefaultModelContextPolicy)
+
+
+def test_default_model_context_policy_compacts_superseded_renders_after_three_calls() -> None:
+    patches = (
+        [{"op": "replace", "path": "/background", "value": "#111111"}],
+        [{"op": "replace", "path": "/background", "value": "#222222"}],
+        [{"op": "replace", "path": "/background", "value": "#333333"}],
+    )
+
+    def retrieve_first_render(request: ModelRequest) -> ModelResponse:
+        render_results = {
+            message.tool_call_id: json.loads(message.content or "null")
+            for message in request.messages
+            if message.role == "tool" and message.tool_call_id is not None
+        }
+        first = render_results["render-1"]
+        assert first == {
+            "evidence_ref": first["evidence_ref"],
+            "render_ref": "render:1",
+            "status": "superseded",
+            "tool": "render_design",
+        }
+        assert render_results["render-2"]["status"] == "superseded"
+        assert render_results["render-3"] == {
+            "render_ref": "render:3",
+            "visual_review": "The title has clear hierarchy; increase the lower image contrast.",
+        }
+
+        render_calls = {
+            call.id: call
+            for message in request.messages
+            for call in message.tool_calls
+            if call.name == "render_design"
+        }
+        assert render_calls["render-1"].arguments == {
+            "evidence_ref": first["evidence_ref"],
+        }
+        assert render_calls["render-3"].arguments == {"patch": patches[2]}
+        assert "retrieve_evidence" in {tool.name for tool in request.tools}
+        return ModelResponse(
+            tool_calls=(
+                ToolCall(
+                    id="retrieve-render-1",
+                    name="retrieve_evidence",
+                    arguments={"evidence_ref": first["evidence_ref"]},
+                ),
+            )
+        )
+
+    model = FakeMainAgent(
+        [
+            ModelResponse(
+                tool_calls=(ToolCall(id=f"render-{index}", name="render_design", arguments={"patch": patch}),)
+            )
+            for index, patch in enumerate(patches, start=1)
+        ]
+        + [
+            retrieve_first_render,
+            ModelResponse(content=json.dumps({"message": "Review complete.", "patch": None})),
+        ]
+    )
+    harness = Myli(
+        main_model=model,
+        vision_model=FakeVisionAgent(),
+        design_spec=DESIGN_SPEC,
+        renderer=FakeRenderer(),
+    )
+
+    result = asyncio.run(harness.run(request="Try three backgrounds.", design=CURRENT_DESIGN, can_edit=True))
+
+    first_evidence_ref = result.tool_outcomes[0].evidence_ref
+    assert first_evidence_ref is not None
+    assert all("retrieve_evidence" not in {tool.name for tool in request.tools} for request in model.requests[:3])
+    retrieved = json.loads(model.requests[4].messages[-1].content or "null")
+    assert retrieved == {
+        "evidence_ref": first_evidence_ref,
+        "json_pointer": "",
+        "value": {
+            "arguments": {"patch": patches[0]},
+            "result": {
+                "render_ref": "render:1",
+                "visual_review": "The title has clear hierarchy; increase the lower image contrast.",
+            },
+            "tool": "render_design",
+        },
+    }
+
+
+def test_default_context_keeps_unresolved_high_severity_render_and_commit_evidence() -> None:
+    class SequencedVisionAgent:
+        def __init__(self) -> None:
+            self.reviews = iter(
+                (
+                    {
+                        "ready_to_commit": False,
+                        "defects": [
+                            {
+                                "severity": "high",
+                                "problem": "The title is clipped.",
+                                "recommended_change": "Move the title down.",
+                            }
+                        ],
+                    },
+                    {"ready_to_commit": True, "defects": []},
+                )
+            )
+
+        async def review(self, request: VisualReviewRequest) -> dict[str, Any]:
+            del request
+            return next(self.reviews)
+
+    def inspect_retained_context(request: ModelRequest) -> ModelResponse:
+        tool_results = {
+            message.tool_call_id: json.loads(message.content or "null")
+            for message in request.messages
+            if message.role == "tool" and message.tool_call_id is not None
+        }
+        assert tool_results["render-high"]["visual_review"]["defects"][0]["severity"] == "high"
+        assert tool_results["render-ready"]["render_ref"] == "render:2"
+        assert tool_results["commit-render"] == {"committed": True, "render_ref": "render:2"}
+        return ModelResponse(content=json.dumps({"message": "Selected.", "patch": None}))
+
+    first_patch = [{"op": "replace", "path": "/background", "value": "#111111"}]
+    second_patch = [{"op": "replace", "path": "/background", "value": "#222222"}]
+    model = FakeMainAgent(
+        [
+            ModelResponse(
+                tool_calls=(ToolCall(id="render-high", name="render_design", arguments={"patch": first_patch}),)
+            ),
+            ModelResponse(
+                tool_calls=(ToolCall(id="render-ready", name="render_design", arguments={"patch": second_patch}),)
+            ),
+            commit_latest_render,
+            inspect_retained_context,
+        ]
+    )
+    harness = Myli(
+        main_model=model,
+        vision_model=SequencedVisionAgent(),
+        design_spec=DESIGN_SPEC,
+        renderer=FakeRenderer(),
+    )
+
+    result = asyncio.run(harness.run(request="Resolve severe defects.", design=CURRENT_DESIGN, can_edit=True))
+
+    assert result.design == {"background": "#222222", "elements": []}
+
+
+def test_default_context_keeps_tool_errors_and_commit_authorization_evidence() -> None:
+    first_patch = [{"op": "replace", "path": "/background", "value": "#111111"}]
+    second_patch = [{"op": "replace", "path": "/background", "value": "#222222"}]
+
+    def commit_and_request_invalid_render(request: ModelRequest) -> ModelResponse:
+        return ModelResponse(
+            tool_calls=(
+                ToolCall(
+                    id="commit-render",
+                    name="commit_render",
+                    arguments={"render_ref": latest_render_ref(request)},
+                ),
+                ToolCall(id="render-invalid", name="render_design", arguments={}),
+            )
+        )
+
+    def inspect_retained_context(request: ModelRequest) -> ModelResponse:
+        tool_results = {
+            message.tool_call_id: json.loads(message.content or "null")
+            for message in request.messages
+            if message.role == "tool" and message.tool_call_id is not None
+        }
+        assert tool_results["render-1"]["status"] == "superseded"
+        assert tool_results["render-2"]["visual_review"]
+        assert tool_results["commit-render"] == {"committed": True, "render_ref": "render:2"}
+        assert tool_results["render-invalid"]["status"] == "rejected"
+        assert "requires patch" in tool_results["render-invalid"]["error"]
+        invalid_call = next(
+            call for message in request.messages for call in message.tool_calls if call.id == "render-invalid"
+        )
+        assert invalid_call.arguments == {}
+        return ModelResponse(content=json.dumps({"message": "Selected.", "patch": None}))
+
+    model = FakeMainAgent(
+        [
+            ModelResponse(
+                tool_calls=(ToolCall(id="render-1", name="render_design", arguments={"patch": first_patch}),)
+            ),
+            ModelResponse(
+                tool_calls=(ToolCall(id="render-2", name="render_design", arguments={"patch": second_patch}),)
+            ),
+            commit_and_request_invalid_render,
+            inspect_retained_context,
+        ]
+    )
+    harness = Myli(
+        main_model=model,
+        vision_model=FakeVisionAgent(),
+        design_spec=DESIGN_SPEC,
+        renderer=FakeRenderer(),
+    )
+
+    result = asyncio.run(harness.run(request="Keep the authorized candidate.", design=CURRENT_DESIGN, can_edit=True))
+
+    assert result.design == {"background": "#222222", "elements": []}
+    assert result.tool_outcomes[-1].status == "rejected"
+
+
+def test_default_model_context_policy_validates_compaction_threshold() -> None:
+    with pytest.raises(ValueError, match="positive integer"):
+        DefaultModelContextPolicy(compact_after_model_calls=0)

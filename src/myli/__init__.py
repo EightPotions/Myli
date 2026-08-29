@@ -65,7 +65,7 @@ from .harness import HarnessLimits, Myli
 from .json_patch import JsonPatchLimits, apply_json_patch
 
 
-__version__ = "0.3.1"
+__version__ = "0.4.0"
 
 __all__ = [
     "EVENT_KINDS",

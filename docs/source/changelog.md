@@ -5,6 +5,11 @@ the public contracts evolve.
 
 ## Unreleased
 
+## 0.4.0
+
+- Invalid JSON Patches and render candidates that fail schema validation no
+  longer consume the per-run render budget.
+
 ## 0.3.1
 
 - The default `ModelContextPolicy` now compacts superseded render patches and

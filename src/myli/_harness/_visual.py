@@ -93,7 +93,6 @@ class VisualToolsMixin:
                 status="rejected",
                 message="The render budget is exhausted.",
             )
-        state.render_calls += 1
         try:
             revision_patch = call.arguments["patch"]
             patched = self._apply_patch(base_document, revision_patch)
@@ -132,6 +131,7 @@ class VisualToolsMixin:
                 message=f"Render candidate validation failed: {exc}",
                 cause=exc,
             )
+        state.render_calls += 1
         try:
             artifact = await asyncio.wait_for(
                 self.renderer.render(candidate),  # type: ignore[union-attr]

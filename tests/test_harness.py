@@ -2487,6 +2487,57 @@ def test_normalized_render_patch_is_rejected_before_rendering() -> None:
     assert "round-trip without normalization" in (result.traces[0].tool_outcomes[0].message or "")
 
 
+def test_invalid_render_patches_do_not_consume_render_budget() -> None:
+    model = FakeMainAgent(
+        [
+            ModelResponse(
+                tool_calls=(
+                    ToolCall(
+                        id="render-invalid-patch",
+                        name="render_design",
+                        arguments={"patch": {"op": "remove", "path": "/background"}},
+                    ),
+                )
+            ),
+            ModelResponse(
+                tool_calls=(
+                    ToolCall(
+                        id="render-invalid-schema",
+                        name="render_design",
+                        arguments={"patch": [{"op": "remove", "path": "/background"}]},
+                    ),
+                )
+            ),
+            ModelResponse(
+                tool_calls=(
+                    ToolCall(
+                        id="render-valid",
+                        name="render_design",
+                        arguments={"patch": []},
+                    ),
+                )
+            ),
+            ModelResponse(content=json.dumps({"message": "The valid candidate rendered.", "patch": None})),
+        ]
+    )
+    renderer = FakeRenderer()
+    harness = Myli(
+        main_model=model,
+        vision_model=FakeVisionAgent(),
+        design_spec=DESIGN_SPEC,
+        renderer=renderer,
+        limits=HarnessLimits(max_renders=1),
+    )
+
+    result = asyncio.run(harness.run(request="Render a valid candidate.", design=CURRENT_DESIGN))
+
+    assert [outcome.status for outcome in result.tool_outcomes] == ["rejected", "rejected", "succeeded"]
+    assert "JSON Patch must be an array" in (result.tool_outcomes[0].message or "")
+    assert "required property" in (result.tool_outcomes[1].message or "")
+    assert result.tool_outcomes[2].result["render_ref"] == "render:1"
+    assert renderer.designs == [CURRENT_DESIGN]
+
+
 def test_history_accepts_only_plain_user_and_assistant_messages() -> None:
     harness = Myli(
         main_model=FakeMainAgent([]),

@@ -17,11 +17,15 @@ from .contracts import (
     DesignSpec,
     EventHandler,
     FailureMode,
+    ImageDetail,
+    ImageMessagePart,
     InputArtifact,
     InputArtifactLoader,
     InputMigrator,
     MainModel,
     Message,
+    MessageContent,
+    MessagePart,
     ModelCallPurpose,
     ModelCallTrace,
     ModelContext,
@@ -36,6 +40,7 @@ from .contracts import (
     RunUsage,
     StepHandler,
     StepTrace,
+    TextMessagePart,
     ToolCall,
     ToolContext,
     ToolDecision,
@@ -65,7 +70,7 @@ from .harness import HarnessLimits, Myli
 from .json_patch import JsonPatchLimits, apply_json_patch
 
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 __all__ = [
     "EVENT_KINDS",
@@ -87,6 +92,8 @@ __all__ = [
     "FunctionAssetSearch",
     "FunctionRenderer",
     "HarnessLimits",
+    "ImageDetail",
+    "ImageMessagePart",
     "InputArtifact",
     "InputArtifactLoader",
     "InputMigrator",
@@ -96,6 +103,8 @@ __all__ = [
     "LiteLLMVisionModel",
     "MainModel",
     "Message",
+    "MessageContent",
+    "MessagePart",
     "ModelCallPurpose",
     "ModelCallTrace",
     "ModelContext",
@@ -128,6 +137,7 @@ __all__ = [
     "ToolMiddleware",
     "ToolOutcome",
     "TraceRedactor",
+    "TextMessagePart",
     "VisualReviewImage",
     "VisualReviewRequest",
     "VisionModel",

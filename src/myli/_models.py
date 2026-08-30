@@ -13,9 +13,11 @@ from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
 
 from ._json import canonical_json_dumps, canonical_json_value, strict_json_loads, validate_json_value
 from .contracts import (
+    ImageMessagePart,
     Message,
     ModelRequest,
     ModelResponse,
+    TextMessagePart,
     ToolCall,
     VisualReviewRequest,
 )
@@ -403,7 +405,7 @@ def _message_to_backend(message: Message) -> dict[str, Any]:
         converted["tool_call_id"] = message.tool_call_id
         return converted
 
-    converted["content"] = message.content
+    converted["content"] = _message_content_to_backend(message.content)
     if message.tool_calls:
         converted["tool_calls"] = [
             {
@@ -416,6 +418,43 @@ def _message_to_backend(message: Message) -> dict[str, Any]:
             }
             for call in message.tool_calls
         ]
+    return converted
+
+
+def _message_content_to_backend(content: Any) -> Any:
+    if not isinstance(content, tuple):
+        return content
+
+    converted: list[dict[str, Any]] = []
+    for part in content:
+        if isinstance(part, TextMessagePart):
+            converted.append({"type": "text", "text": part.text})
+            continue
+        if isinstance(part, ImageMessagePart):
+            artifact = part.artifact
+            width = artifact.metadata.get("width")
+            height = artifact.metadata.get("height")
+            dimensions = (
+                f" Original dimensions: {width} by {height} pixels."
+                if isinstance(width, int)
+                and not isinstance(width, bool)
+                and isinstance(height, int)
+                and not isinstance(height, bool)
+                else " Original dimensions are unavailable."
+            )
+            converted.append({"type": "text", "text": f"{part.label}.{dimensions}"})
+            image_data = base64.b64encode(artifact.data).decode("ascii")
+            converted.append(
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{artifact.media_type};base64,{image_data}",
+                        "detail": part.detail,
+                    },
+                }
+            )
+            continue
+        raise TypeError("Message content contains an unsupported multimodal part.")
     return converted
 
 

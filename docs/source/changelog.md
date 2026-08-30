@@ -5,6 +5,15 @@ the public contracts evolve.
 
 ## Unreleased
 
+## 0.5.0
+
+- Main-model messages now support provider-neutral text and image parts. Input
+  artifacts and successful rendered candidates can opt into direct multimodal
+  visibility while retaining their run-scoped labels and trust boundaries.
+- JSON Patch operation counts are unlimited by default. Applications can still
+  configure explicit positive operation limits for harness and standalone patch
+  evaluation.
+
 ## 0.4.0
 
 - Invalid JSON Patches and render candidates that fail schema validation no

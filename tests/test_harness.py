@@ -18,6 +18,7 @@ from myli import (
     DesignSpec,
     FailureMode,
     HarnessLimits,
+    ImageMessagePart,
     InputArtifact,
     LiteLLMMainModel,
     LiteLLMVisionModel,
@@ -971,6 +972,79 @@ def test_application_tool_can_load_registered_inputs_once_per_run() -> None:
     assert '"message_scope":"latest"' in prompt
 
 
+def test_input_artifact_can_be_included_directly_in_main_model_context() -> None:
+    model = FakeMainAgent([ModelResponse(content=json.dumps({"message": "I can see it.", "patch": None}))])
+    load_calls = 0
+
+    async def load_attachment() -> RenderedArtifact:
+        nonlocal load_calls
+        load_calls += 1
+        return RenderedArtifact(
+            b"attached-image",
+            "image/png",
+            {"width": 320, "height": 180},
+        )
+
+    harness = Myli(main_model=model, design_spec=DESIGN_SPEC)
+    result = asyncio.run(
+        harness.run(
+            request="Describe the attachment.",
+            design=CURRENT_DESIGN,
+            input_artifacts=(
+                InputArtifact(
+                    id="attachment-1",
+                    kind="attached_image",
+                    loader=load_attachment,
+                    include_in_main_context=True,
+                    detail="high",
+                ),
+            ),
+        )
+    )
+
+    assert result.message == "I can see it."
+    assert load_calls == 1
+    content = model.requests[0].messages[-1].content
+    assert isinstance(content, tuple)
+    image = next(part for part in content if isinstance(part, ImageMessagePart))
+    assert image.label == "Input artifact: attachment-1"
+    assert image.detail == "high"
+    assert image.artifact.data == b"attached-image"
+
+
+def test_successful_render_can_be_included_directly_in_main_model_context() -> None:
+    def finish_after_seeing_render(request: ModelRequest) -> ModelResponse:
+        content = request.messages[-1].content
+        assert isinstance(content, tuple)
+        image = next(part for part in content if isinstance(part, ImageMessagePart))
+        assert image.label == "Rendered candidate: render:1"
+        assert image.artifact.data == b"rendered-poster"
+        return ModelResponse(content=json.dumps({"message": "I reviewed it directly.", "patch": None}))
+
+    model = FakeMainAgent(
+        [
+            ModelResponse(tool_calls=(ToolCall(id="render-1", name="render_design", arguments={"patch": []}),)),
+            finish_after_seeing_render,
+        ]
+    )
+    harness = Myli(
+        main_model=model,
+        vision_model=FakeVisionAgent(),
+        design_spec=DESIGN_SPEC,
+        renderer=FakeRenderer(),
+        include_rendered_artifacts_in_main_context=True,
+    )
+
+    result = asyncio.run(
+        harness.run(
+            request="Review the current design.",
+            design=CURRENT_DESIGN,
+        )
+    )
+
+    assert result.message == "I reviewed it directly."
+
+
 def test_agent_can_commit_a_render_and_return_null_final_patch() -> None:
     committed = {"background": "#f5efe6", "elements": []}
     previewed = {"background": "#000000", "elements": []}
@@ -1228,6 +1302,28 @@ def test_incremental_render_enforces_limits_on_the_composed_patch() -> None:
     outcome = result.tool_outcomes[1]
     assert outcome.status == "rejected"
     assert "exceeds the 1-operation limit" in (outcome.message or "")
+
+
+def test_patch_schema_has_no_operation_limit_by_default() -> None:
+    model = FakeMainAgent([ModelResponse(content=json.dumps({"message": "No changes.", "patch": None}))])
+    harness = Myli(
+        main_model=model,
+        vision_model=FakeVisionAgent(),
+        design_spec=DESIGN_SPEC,
+        renderer=FakeRenderer(),
+    )
+
+    asyncio.run(
+        harness.run(
+            request="Review the design.",
+            design=CURRENT_DESIGN,
+            can_edit=False,
+        )
+    )
+
+    render_tool = next(tool for tool in model.requests[0].tools if tool.name == "render_design")
+    patch_schema = render_tool.input_schema["properties"]["patch"]
+    assert "maxItems" not in patch_schema
 
 
 def test_matching_final_patch_keeps_the_committed_render_patch() -> None:
@@ -2720,6 +2816,14 @@ def test_default_model_context_policy_compacts_superseded_renders_after_three_ca
             "evidence_ref": first["evidence_ref"],
         }
         assert render_calls["render-3"].arguments == {"patch": patches[2]}
+        visible_render_labels = [
+            part.label
+            for message in request.messages
+            if isinstance(message.content, tuple)
+            for part in message.content
+            if isinstance(part, ImageMessagePart)
+        ]
+        assert visible_render_labels == ["Rendered candidate: render:3"]
         assert "retrieve_evidence" in {tool.name for tool in request.tools}
         return ModelResponse(
             tool_calls=(
@@ -2748,6 +2852,7 @@ def test_default_model_context_policy_compacts_superseded_renders_after_three_ca
         vision_model=FakeVisionAgent(),
         design_spec=DESIGN_SPEC,
         renderer=FakeRenderer(),
+        include_rendered_artifacts_in_main_context=True,
     )
 
     result = asyncio.run(harness.run(request="Try three backgrounds.", design=CURRENT_DESIGN, can_edit=True))

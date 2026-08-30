@@ -117,7 +117,12 @@ structured output.
 
 Application attachments can be passed to `Myli.run(input_artifacts=...)` as eager
 or lazy `InputArtifact` values. They are isolated to the run and available to tools
-through `ToolContext.input_artifacts` and `load_input_artifact()`.
+through `ToolContext.input_artifacts` and `load_input_artifact()`. An image artifact
+can opt into direct main-model visibility with `include_in_main_context=True`; its
+run-scoped ID becomes the image label and visibility does not grant design-placement
+authorization. Direct images use provider-neutral `TextMessagePart` and
+`ImageMessagePart` values. `LiteLLMMainModel` maps those parts to the provider's
+multimodal message format.
 
 Pydantic remains optional:
 
@@ -185,7 +190,11 @@ run-scoped `render_ref`. A later `render_design` call can pass that reference as
 `base_render_ref` to apply its patch to the rendered candidate; Myli composes the
 chain into a patch relative to the original document. `commit_render` selects a
 render as the run's proposal without rendering again or persisting it. The final
-response should then use `patch: null`; an equivalent patch is accepted, while a
+reasoning loop can opt into seeing successful candidate pixels directly by constructing
+the harness with `include_rendered_artifacts_in_main_context=True`. The structured
+vision review remains available as independent evidence, and older direct render
+images are compacted with their superseded render context. The final response should
+then use `patch: null`; an equivalent patch is accepted, while a
 conflicting patch enters normal validation retry.
 Final policies run again with all completed tool outcomes before the committed
 proposal is returned. Uncommitted renders remain previews and do not affect the

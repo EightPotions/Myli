@@ -433,8 +433,10 @@ class RuntimeMixin:
         pending_call_ids: set[str] = set()
         seen_call_ids: set[str] = set()
         for message in messages:
-            if message.content is not None and not isinstance(message.content, str):
-                raise ConfigurationError("Prepared message content must be text or None.")
+            if message.content is not None and not isinstance(message.content, (str, tuple)):
+                raise ConfigurationError("Prepared message content must be text, multimodal user content, or None.")
+            if isinstance(message.content, tuple) and message.role != "user":
+                raise ConfigurationError("Only prepared user messages may contain multimodal content.")
             if message.role not in {"system", "user", "assistant", "tool"}:
                 raise ConfigurationError("Prepared messages contain an unsupported role.")
             if not isinstance(message.tool_calls, tuple):

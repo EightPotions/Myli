@@ -90,3 +90,9 @@ def test_move_cannot_target_its_own_child() -> None:
             {"node": {"child": {}}},
             [{"op": "move", "from": "/node", "path": "/node/child/moved"}],
         )
+
+
+def test_patch_operation_count_is_unlimited_by_default() -> None:
+    patch = [{"op": "replace", "path": "/value", "value": index} for index in range(1_001)]
+
+    assert apply_json_patch({"value": 0}, patch) == {"value": 1_000}

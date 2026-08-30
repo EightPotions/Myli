@@ -201,9 +201,8 @@ class SchemaMixin:
                 "additionalProperties": False,
             }
 
-        return {
+        schema: dict[str, Any] = {
             "type": "array",
-            "maxItems": self.limits.max_patch_operations,
             "items": {
                 "anyOf": [
                     operation("add", value=True),
@@ -215,6 +214,9 @@ class SchemaMixin:
                 ]
             },
         }
+        if self.limits.max_patch_operations is not None:
+            schema["maxItems"] = self.limits.max_patch_operations
+        return schema
 
     def _vision_questions_schema(self) -> dict[str, Any]:
         return {

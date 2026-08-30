@@ -67,7 +67,7 @@ class HarnessLimits:
     max_evidence_retrievals: int = 6
     max_evidence_result_bytes: int = 65_536
     max_evidence_pointer_chars: int = 4_096
-    max_patch_operations: int = 100
+    max_patch_operations: int | None = None
     max_patch_bytes: int = 262_144
     max_document_bytes: int = 2_097_152
     max_history_messages: int | None = 100
@@ -102,7 +102,6 @@ class HarnessLimits:
             "max_evidence_pointer_chars",
             "max_vision_questions",
             "max_vision_question_chars",
-            "max_patch_operations",
             "max_patch_bytes",
             "max_document_bytes",
             "max_pointer_depth",
@@ -121,6 +120,12 @@ class HarnessLimits:
             value = getattr(self, name)
             if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 0):
                 raise ValueError(f"{name} must be a non-negative integer or None.")
+        if self.max_patch_operations is not None and (
+            isinstance(self.max_patch_operations, bool)
+            or not isinstance(self.max_patch_operations, int)
+            or self.max_patch_operations < 1
+        ):
+            raise ValueError("max_patch_operations must be a positive integer or None.")
         for name in (
             "max_total_provider_tokens",
             "max_total_tool_result_bytes",

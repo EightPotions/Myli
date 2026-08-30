@@ -23,6 +23,7 @@ TDesignContra = TypeVar("TDesignContra", contravariant=True)
 PreviewLoader = Callable[[], Awaitable["RenderedArtifact"]]
 InputArtifactLoader = Callable[[], Awaitable["RenderedArtifact"]]
 ModelCallPurpose = Literal["main", "render_review", "asset_inspection", "comparison"]
+ImageDetail = Literal["auto", "low", "high", "original"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,13 +46,61 @@ class ToolCall:
 
 
 @dataclass(frozen=True, slots=True)
+class TextMessagePart:
+    """Provider-neutral text inside a multimodal user message."""
+
+    text: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.text, str) or not self.text:
+            raise ValueError("TextMessagePart.text cannot be empty.")
+
+
+@dataclass(frozen=True, slots=True)
+class ImageMessagePart:
+    """One labeled image inside a multimodal user message."""
+
+    artifact: RenderedArtifact
+    label: str = "Image"
+    detail: ImageDetail = "auto"
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.artifact, RenderedArtifact):
+            raise TypeError("ImageMessagePart.artifact must use RenderedArtifact.")
+        if not isinstance(self.artifact.data, bytes) or not self.artifact.data:
+            raise ValueError("ImageMessagePart.artifact data cannot be empty.")
+        if not isinstance(self.artifact.media_type, str) or not self.artifact.media_type.startswith("image/"):
+            raise ValueError("ImageMessagePart.artifact must use an image media type.")
+        if not isinstance(self.label, str) or not self.label.strip():
+            raise ValueError("ImageMessagePart.label cannot be empty.")
+        if self.detail not in {"auto", "low", "high", "original"}:
+            raise ValueError("ImageMessagePart.detail is invalid.")
+        object.__setattr__(self, "label", self.label.strip())
+
+
+MessagePart = TextMessagePart | ImageMessagePart
+MessageContent = str | tuple[MessagePart, ...] | None
+
+
+@dataclass(frozen=True, slots=True)
 class Message:
     """A provider-neutral conversation message."""
 
     role: Literal["system", "user", "assistant", "tool"]
-    content: str | None = None
+    content: MessageContent = None
     tool_calls: tuple[ToolCall, ...] = ()
     tool_call_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if isinstance(self.content, tuple):
+            if self.role != "user":
+                raise ValueError("Multimodal message content is supported only for user messages.")
+            if not self.content:
+                raise ValueError("Multimodal message content cannot be empty.")
+            if any(not isinstance(part, (TextMessagePart, ImageMessagePart)) for part in self.content):
+                raise TypeError("Multimodal message content contains an unsupported part.")
+            if not any(isinstance(part, ImageMessagePart) for part in self.content):
+                raise ValueError("Multimodal message content must contain an image part.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -310,9 +359,18 @@ class DefaultModelContextPolicy:
             )
         if not compacted:
             return source
+        compacted_render_refs = {render_ref for render_ref, _evidence_ref in compacted.values()}
 
         prepared: list[Message] = []
         for message in source:
+            if message.role == "user" and isinstance(message.content, tuple):
+                rendered_refs = {
+                    part.label.removeprefix("Rendered candidate: ")
+                    for part in message.content
+                    if isinstance(part, ImageMessagePart) and part.label.startswith("Rendered candidate: ")
+                }
+                if rendered_refs and rendered_refs.issubset(compacted_render_refs):
+                    continue
             if message.role == "assistant" and message.tool_calls:
                 calls = tuple(
                     replace(
@@ -392,7 +450,7 @@ class VisualReviewImage:
 
     artifact: RenderedArtifact
     label: str = "Image"
-    detail: Literal["auto", "low", "high", "original"] = "auto"
+    detail: ImageDetail = "auto"
 
     def __post_init__(self) -> None:
         if not isinstance(self.artifact, RenderedArtifact):
@@ -528,6 +586,8 @@ class InputArtifact:
     metadata: Mapping[str, Any] = field(default_factory=dict, compare=False)
     artifact: RenderedArtifact | None = field(default=None, repr=False, compare=False)
     loader: InputArtifactLoader | None = field(default=None, repr=False, compare=False)
+    include_in_main_context: bool = False
+    detail: ImageDetail = "auto"
     run_id: str | None = None
 
     def __post_init__(self) -> None:
@@ -547,6 +607,10 @@ class InputArtifact:
             raise TypeError("InputArtifact.artifact must use RenderedArtifact.")
         if self.loader is not None and not callable(self.loader):
             raise TypeError("InputArtifact.loader must be callable.")
+        if not isinstance(self.include_in_main_context, bool):
+            raise TypeError("InputArtifact.include_in_main_context must be boolean.")
+        if self.detail not in {"auto", "low", "high", "original"}:
+            raise ValueError("InputArtifact.detail is invalid.")
 
         object.__setattr__(self, "id", self.id.strip())
         object.__setattr__(self, "kind", self.kind.strip())

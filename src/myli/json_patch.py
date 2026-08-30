@@ -29,7 +29,7 @@ _REQUIRED_MEMBERS = {
 class JsonPatchLimits:
     """Resource limits applied before and during patch evaluation."""
 
-    max_operations: int = 1_000
+    max_operations: int | None = None
     max_patch_bytes: int = 1_048_576
     max_pointer_depth: int = 128
     max_value_bytes: int = 524_288
@@ -37,7 +37,6 @@ class JsonPatchLimits:
 
     def __post_init__(self) -> None:
         for name in (
-            "max_operations",
             "max_patch_bytes",
             "max_pointer_depth",
             "max_value_bytes",
@@ -46,6 +45,12 @@ class JsonPatchLimits:
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
                 raise ValueError(f"{name} must be a positive integer.")
+        if self.max_operations is not None and (
+            isinstance(self.max_operations, bool)
+            or not isinstance(self.max_operations, int)
+            or self.max_operations < 1
+        ):
+            raise ValueError("max_operations must be a positive integer or None.")
 
 
 def apply_json_patch(
@@ -80,7 +85,7 @@ def apply_json_patch(
         validate_json_value(patch)
     except (TypeError, ValueError, RecursionError) as exc:
         raise JsonPatchError(f"JSON Patch inputs must contain valid JSON values: {exc}") from exc
-    if len(patch) > resolved.max_operations:
+    if resolved.max_operations is not None and len(patch) > resolved.max_operations:
         raise JsonPatchError(f"JSON Patch exceeds the {resolved.max_operations}-operation limit.")
     if _json_size(patch) > resolved.max_patch_bytes:
         raise JsonPatchError(f"JSON Patch exceeds the {resolved.max_patch_bytes}-byte limit.")

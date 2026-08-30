@@ -11,6 +11,7 @@ import pytest
 from myli import (
     DesignSpec,
     FunctionRenderer,
+    ImageMessagePart,
     LiteLLMMainModel,
     LiteLLMVisionModel,
     Message,
@@ -22,6 +23,7 @@ from myli import (
     ProviderRateLimitError,
     ProviderTimeoutError,
     RenderedArtifact,
+    TextMessagePart,
     ToolCall,
     ToolDefinition,
     VisualReviewImage,
@@ -133,6 +135,53 @@ def test_main_client_maps_messages_tools_schema_and_tool_response() -> None:
     assert response.metadata["provider_response_id"] == "response-1"
     assert response.metadata["usage"]["prompt_tokens"] == 10
     assert response.reasoning_content == "I should search before editing."
+
+
+def test_main_client_maps_provider_neutral_multimodal_user_content() -> None:
+    calls = []
+
+    async def completion(**kwargs):
+        calls.append(kwargs)
+        return {"choices": [{"message": {"content": '{"message":"Seen.","patch":null}'}}]}
+
+    request = ModelRequest(
+        messages=(
+            Message(role="system", content="System instructions"),
+            Message(
+                role="user",
+                content=(
+                    TextMessagePart("Inspect the supplied reference."),
+                    ImageMessagePart(
+                        artifact=RenderedArtifact(
+                            b"image-bytes",
+                            "image/png",
+                            metadata={"width": 640, "height": 480},
+                        ),
+                        label="Input artifact: reference-1",
+                        detail="high",
+                    ),
+                ),
+            ),
+        ),
+        tools=(),
+        output_schema={"type": "object"},
+    )
+    client = LiteLLMMainModel(model="openai/test", completion=completion)
+
+    response = asyncio.run(client.complete(request))
+
+    content = calls[0]["messages"][1]["content"]
+    assert content[0] == {"type": "text", "text": "Inspect the supplied reference."}
+    assert content[1] == {
+        "type": "text",
+        "text": "Input artifact: reference-1. Original dimensions: 640 by 480 pixels.",
+    }
+    assert content[2]["type"] == "image_url"
+    assert content[2]["image_url"]["detail"] == "high"
+    assert content[2]["image_url"]["url"] == (
+        "data:image/png;base64," + base64.b64encode(b"image-bytes").decode("ascii")
+    )
+    assert response.content == '{"message":"Seen.","patch":null}'
 
 
 def test_main_client_constructs_semantically_equal_requests_identically() -> None:

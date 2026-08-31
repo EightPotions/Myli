@@ -165,8 +165,9 @@ middleware apply a rule exactly once per model work phase, including when a
 batch executes in parallel.
 
 CandidatePolicy runs before rendering a proposal and before returning the final
-candidate. CandidateContext includes capabilities, approved assets, and all
-run-scoped outcomes; successful_tool_outcomes is the authorization-safe subset.
+candidate, including a `patch: null` decision against the unchanged current design.
+CandidateContext includes capabilities, approved assets, and all run-scoped outcomes;
+successful_tool_outcomes is the authorization-safe subset.
 
 ## Assets and visual review
 
@@ -192,7 +193,8 @@ chain into a patch relative to the original document. `commit_render` selects a
 render as the run's proposal without rendering again or persisting it. The final
 reasoning loop can opt into seeing successful candidate pixels directly by constructing
 the harness with `include_rendered_artifacts_in_main_context=True`. The structured
-vision review remains available as independent evidence, and older direct render
+vision review remains available as independent evidence. The render result states
+whether the proposal changed the current document, and older direct render
 images are compacted with their superseded render context. The final response should
 then use `patch: null`; an equivalent patch is accepted, while a
 conflicting patch enters normal validation retry.

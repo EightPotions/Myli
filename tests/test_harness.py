@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import replace
 from typing import Any
 
@@ -1443,6 +1443,73 @@ def test_uncommitted_render_does_not_affect_run_result() -> None:
     assert result.patch is None
 
 
+def test_noop_final_runs_candidate_policy_with_render_evidence() -> None:
+    patch = [{"op": "replace", "path": "/background", "value": "#f5efe6"}]
+
+    def require_changed_render_commit(
+        candidate: dict[str, Any],
+        current: dict[str, Any],
+        context: CandidateContext,
+    ) -> None:
+        del candidate, current
+        if context.phase != "final":
+            return
+        changed_render = any(
+            outcome.tool_name == "render_design"
+            and isinstance(outcome.result, Mapping)
+            and outcome.result.get("changed") is True
+            for outcome in context.successful_tool_outcomes
+        )
+        committed = any(
+            outcome.tool_name == "commit_render"
+            and isinstance(outcome.result, Mapping)
+            and outcome.result.get("committed") is True
+            for outcome in context.successful_tool_outcomes
+        )
+        if changed_render and not committed:
+            raise ValueError("Commit the successful changed render before finishing.")
+
+    model = FakeMainAgent(
+        [
+            ModelResponse(
+                tool_calls=(
+                    ToolCall(
+                        id="render-changed",
+                        name="render_design",
+                        arguments={"patch": patch},
+                    ),
+                )
+            ),
+            ModelResponse(content=json.dumps({"message": "I previewed the change.", "patch": None})),
+            commit_latest_render,
+            ModelResponse(content=json.dumps({"message": "I committed the change.", "patch": None})),
+        ]
+    )
+    harness = Myli(
+        main_model=model,
+        vision_model=FakeVisionAgent(),
+        design_spec=DESIGN_SPEC,
+        renderer=FakeRenderer(),
+        candidate_policies=[require_changed_render_commit],
+    )
+
+    result = asyncio.run(
+        harness.run(
+            request="Warm the background.",
+            design=CURRENT_DESIGN,
+            can_edit=True,
+        )
+    )
+
+    render_result = result.traces[0].tool_outcomes[0].result
+    assert isinstance(render_result, Mapping)
+    assert render_result["changed"] is True
+    assert "Commit the successful changed render" in result.traces[1].validation_failures[0]
+    assert result.design == {"background": "#f5efe6", "elements": []}
+    assert result.changed is True
+    assert result.patch == tuple(patch)
+
+
 def test_render_commit_is_rejected_when_editing_is_disabled() -> None:
     model = FakeMainAgent(
         [
@@ -2802,6 +2869,7 @@ def test_default_model_context_policy_compacts_superseded_renders_after_three_ca
         }
         assert render_results["render-2"]["status"] == "superseded"
         assert render_results["render-3"] == {
+            "changed": True,
             "render_ref": "render:3",
             "visual_review": "The title has clear hierarchy; increase the lower image contrast.",
         }
@@ -2867,6 +2935,7 @@ def test_default_model_context_policy_compacts_superseded_renders_after_three_ca
         "value": {
             "arguments": {"patch": patches[0]},
             "result": {
+                "changed": True,
                 "render_ref": "render:1",
                 "visual_review": "The title has clear hierarchy; increase the lower image contrast.",
             },

@@ -184,7 +184,11 @@ class VisualToolsMixin:
             state,
             call,
             failure_mode,
-            {"visual_review": review, "render_ref": render_ref},
+            {
+                "visual_review": review,
+                "render_ref": render_ref,
+                "changed": changed,
+            },
             retain_context_evidence=self._compact_render_context,
         )
 

@@ -75,6 +75,10 @@ class ResultMixin:
                 state,
             )
         if raw_patch is None:
+            # A no-op final response is still a candidate decision. Run application
+            # policies so they can enforce evidence-dependent workflow rules such as
+            # requiring a successful changed render to be committed.
+            self._validate_candidate(state.current_design, state, phase="final")
             return message, None, False, None
         if not state.can_edit:
             raise DesignValidationError("Editing is disabled; patch must be null.")

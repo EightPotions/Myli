@@ -5,6 +5,12 @@ the public contracts evolve.
 
 ## Unreleased
 
+## 0.5.1
+
+- Final no-op candidate decisions now run candidate policies with render outcomes,
+  including whether each successful render changed the current design, so policies
+  can require changed renders to be committed before a run finishes.
+
 ## 0.5.0
 
 - Main-model messages now support provider-neutral text and image parts. Input

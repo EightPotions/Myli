@@ -1406,6 +1406,56 @@ def test_conflicting_final_patch_after_commit_uses_validation_retry() -> None:
     assert "previous final response was invalid" in (model.requests[3].messages[-1].content or "")
 
 
+def test_rejected_committed_candidate_does_not_consume_identical_candidate_limit() -> None:
+    committed_patch = [{"op": "replace", "path": "/background", "value": "#f5efe6"}]
+    final_attempts = 0
+
+    def reject_first_final_attempt(
+        candidate: dict[str, Any],
+        current: dict[str, Any],
+        context: CandidateContext,
+    ) -> None:
+        nonlocal final_attempts
+        del candidate, current
+        if context.phase == "final":
+            final_attempts += 1
+            if final_attempts == 1:
+                raise ValueError("Retry the committed candidate.")
+
+    final_response = ModelResponse(content=json.dumps({"message": "I selected the warm render.", "patch": None}))
+    model = FakeMainAgent(
+        [
+            ModelResponse(
+                tool_calls=(
+                    ToolCall(
+                        id="render-selected",
+                        name="render_design",
+                        arguments={"patch": committed_patch},
+                    ),
+                )
+            ),
+            commit_latest_render,
+            final_response,
+            final_response,
+        ]
+    )
+    harness = Myli(
+        main_model=model,
+        vision_model=FakeVisionAgent(),
+        design_spec=DESIGN_SPEC,
+        renderer=FakeRenderer(),
+        candidate_policies=[reject_first_final_attempt],
+        limits=HarnessLimits(max_identical_candidates=1),
+    )
+
+    result = asyncio.run(harness.run(request="Warm the background.", design=CURRENT_DESIGN, can_edit=True))
+
+    assert result.design == {"background": "#f5efe6", "elements": []}
+    assert result.patch == tuple(committed_patch)
+    assert final_attempts == 2
+    assert "Retry the committed candidate" in result.traces[2].validation_failures[0]
+
+
 def test_uncommitted_render_does_not_affect_run_result() -> None:
     model = FakeMainAgent(
         [

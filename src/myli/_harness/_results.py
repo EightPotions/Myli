@@ -167,12 +167,6 @@ class ResultMixin:
         *,
         phase: Literal["render", "final"],
     ) -> None:
-        if self.limits.max_identical_candidates is not None:
-            self._record_candidate(
-                state,
-                self.design_spec.serialize(candidate),
-                phase=phase,
-            )
         context = CandidateContext(
             run_id=state.run_id,
             phase=phase,
@@ -201,6 +195,12 @@ class ResultMixin:
                 raise
             except Exception as exc:
                 raise DesignValidationError(str(exc)) from exc
+        if self.limits.max_identical_candidates is not None:
+            self._record_candidate(
+                state,
+                self.design_spec.serialize(candidate),
+                phase=phase,
+            )
 
     @staticmethod
     def _require_exact_candidate(

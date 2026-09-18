@@ -5,6 +5,12 @@ the public contracts evolve.
 
 ## Unreleased
 
+## 0.5.2
+
+- Candidate policies that reject a proposed design no longer consume the
+  identical-candidate limit, allowing committed final responses to be corrected
+  within the validation retry budget.
+
 ## 0.5.1
 
 - Final no-op candidate decisions now run candidate policies with render outcomes,
